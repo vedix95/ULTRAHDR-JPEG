@@ -36,6 +36,7 @@ pub struct ProcessingParams {
     pub ev_shift: f32,
     pub tone_map_mode: String,
     // 🎨 Tonalité Pro (Style Photoshop / Lightroom)
+    pub tonal_contrast: f32,   // -1.0 .. +1.0 (défaut 0.0)
     pub tonal_whites: f32,     // -1.0 .. +1.0 (défaut 0.0)
     pub tonal_highlights: f32, // -1.0 .. +1.0 (défaut 0.0)
     pub tonal_shadows: f32,    // -1.0 .. +1.0 (défaut 0.0)
@@ -53,6 +54,7 @@ impl Default for ProcessingParams {
             highlight_threshold: 0.50,
             ev_shift: 0.0,
             tone_map_mode: "aces".to_string(),
+            tonal_contrast: 0.0,
             tonal_whites: 0.0,
             tonal_highlights: 0.0,
             tonal_shadows: 0.0,
@@ -277,6 +279,7 @@ impl UltraHdrApp {
         let p = &self.params;
 
         let tonal = TonalParams {
+            contrast: p.tonal_contrast,
             whites: p.tonal_whites,
             highlights: p.tonal_highlights,
             shadows: p.tonal_shadows,
@@ -358,6 +361,7 @@ impl UltraHdrApp {
         let p = &self.params;
 
         let tonal = TonalParams {
+            contrast: p.tonal_contrast,
             whites: p.tonal_whites,
             highlights: p.tonal_highlights,
             shadows: p.tonal_shadows,
@@ -473,6 +477,7 @@ impl UltraHdrApp {
             .map(|file_path| {
                 if let Ok(img) = load_image(&file_path) {
                     let tonal = TonalParams {
+                        contrast: p_copy.tonal_contrast,
                         whites: p_copy.tonal_whites,
                         highlights: p_copy.tonal_highlights,
                         shadows: p_copy.tonal_shadows,
@@ -965,6 +970,19 @@ impl UltraHdrApp {
 
                 ui.add_space(10.0);
 
+                // 0. Contraste Global
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Contraste :").strong().color(Color32::WHITE));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_contrast * 100.0));
+                    });
+                });
+                if ui.add(egui::Slider::new(&mut self.params.tonal_contrast, -1.0..=1.0).step_by(0.01).show_value(false)).on_hover_text("Ajuste la dynamique et la pente de contraste entre ombres et hautes lumières.").changed() {
+                    params_changed = true;
+                }
+
+                ui.add_space(8.0);
+
                 // 1. Blancs
                 ui.horizontal(|ui| {
                     let is_active = self.hovered_zone.map(|(z, _)| z == TonalZone::Whites).unwrap_or(false);
@@ -1047,6 +1065,7 @@ impl UltraHdrApp {
                 .rounding(Rounding::same(5.0));
 
                 if ui.add_sized([ui.available_width(), 24.0], btn_reset_tonal).clicked() {
+                    self.params.tonal_contrast = 0.0;
                     self.params.tonal_whites = 0.0;
                     self.params.tonal_highlights = 0.0;
                     self.params.tonal_shadows = 0.0;

@@ -116,3 +116,27 @@ fn test_analyzer_classification() {
     assert!(["SUNSET", "LANDSCAPE", "NIGHT_NEON", "STUDIO"].contains(&analysis.category.as_str()));
     assert!(!analysis.recommended_preset.name.is_empty());
 }
+
+#[test]
+fn test_contrast_modulation() {
+    let w = 40;
+    let h = 40;
+    let mut sdr_u8 = vec![220u8; (w * h * 3) as usize];
+    for i in 0..(w * h / 2) as usize {
+        sdr_u8[i * 3] = 40;
+        sdr_u8[i * 3 + 1] = 40;
+        sdr_u8[i * 3 + 2] = 40;
+    }
+
+    let res_neutral = compute_hdr_and_gain_map(
+        &sdr_u8, None, false, w, h, 1200.0, 203.0, 1.0, 1.0, 0.4,
+        TonalParams::default(), 0.0,
+    );
+
+    let res_contrast = compute_hdr_and_gain_map(
+        &sdr_u8, None, false, w, h, 1200.0, 203.0, 1.0, 1.0, 0.4,
+        TonalParams { contrast: 0.5, ..Default::default() }, 0.0,
+    );
+
+    assert!(res_contrast.gain_max >= res_neutral.gain_max);
+}

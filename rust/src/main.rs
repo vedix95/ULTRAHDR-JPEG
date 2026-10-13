@@ -59,6 +59,10 @@ struct Cli {
     #[arg(long = "threshold")]
     threshold: Option<f32>,
 
+    /// Ajustement de contraste [-1.0..1.0] (défaut: 0.0)
+    #[arg(long = "contrast")]
+    contrast: Option<f32>,
+
     /// Qualité JPEG de l'image SDR de base (défaut: 94)
     #[arg(long = "quality", default_value_t = 94)]
     quality: u8,
@@ -93,6 +97,7 @@ fn process_single_file(
     gamma: Option<f32>,
     shadow_boost: Option<f32>,
     threshold: Option<f32>,
+    contrast: Option<f32>,
     quality: u8,
     gainmap_quality: u8,
     save_gainmap: bool,
@@ -142,10 +147,11 @@ fn process_single_file(
     let final_gamma = gamma.unwrap_or(selected_preset.hi_gamma);
     let final_shadow = shadow_boost.unwrap_or(selected_preset.shadow_boost);
     let final_thresh = threshold.unwrap_or(selected_preset.highlight_threshold);
+    let final_contrast = contrast.unwrap_or(0.0);
 
     println!(
-        "    Paramètres appliqués : Peak={:.0} nits, Gamma={:.2}, ShadowBoost={:.2}x, Thresh={:.2}",
-        final_peak, final_gamma, final_shadow, final_thresh
+        "    Paramètres appliqués : Peak={:.0} nits, Gamma={:.2}, ShadowBoost={:.2}x, Thresh={:.2}, Contraste={:+.0}%",
+        final_peak, final_gamma, final_shadow, final_thresh, final_contrast * 100.0
     );
 
     // 1. Calcul HDR et Gain Map
@@ -160,7 +166,10 @@ fn process_single_file(
         final_shadow,
         final_gamma,
         final_thresh,
-        TonalParams::default(),
+        TonalParams {
+            contrast: final_contrast,
+            ..Default::default()
+        },
         0.40,
     );
 
@@ -265,6 +274,7 @@ fn main() {
             cli.gamma,
             cli.shadow_boost,
             cli.threshold,
+            cli.contrast,
             cli.quality,
             cli.gainmap_quality,
             cli.save_gainmap,
@@ -309,6 +319,7 @@ fn main() {
                     cli.gamma,
                     cli.shadow_boost,
                     cli.threshold,
+                    cli.contrast,
                     cli.quality,
                     cli.gainmap_quality,
                     cli.save_gainmap,

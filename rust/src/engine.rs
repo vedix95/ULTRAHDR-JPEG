@@ -36,6 +36,7 @@ pub fn percentile_mut(v: &mut [f32], p: f32) -> f32 {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TonalParams {
+    pub contrast: f32,   // -1.0 .. +1.0 (défaut 0.0)
     pub whites: f32,     // -1.0 .. +1.0 (défaut 0.0)
     pub highlights: f32, // -1.0 .. +1.0 (défaut 0.0)
     pub shadows: f32,    // -1.0 .. +1.0 (défaut 0.0)
@@ -45,6 +46,7 @@ pub struct TonalParams {
 impl Default for TonalParams {
     fn default() -> Self {
         Self {
+            contrast: 0.0,
             whites: 0.0,
             highlights: 0.0,
             shadows: 0.0,
@@ -295,6 +297,12 @@ pub fn compute_hdr_and_gain_map(
                     let black_weight = (1.0 - l_sdr / 0.25).clamp(0.0, 1.0);
                     let black_mod = 1.0 + tonal.blacks * 0.35 * black_weight;
                     boost = (boost * black_mod).max(1.0);
+                }
+
+                // 5. Contraste Global S-Curve : modifie la transition dynamique autour du pivot moyen (0.45)
+                if tonal.contrast != 0.0 {
+                    let contrast_factor = 1.0 + (l_sdr - 0.45) * tonal.contrast * 0.45;
+                    boost = (boost * contrast_factor.max(0.4)).clamp(1.0, effective_peak_boost * 1.5);
                 }
 
                 hdr_chunk[i * 3] = r_sdr * sdr_white * boost;

@@ -49,6 +49,7 @@ def compute_hdr_and_gain_map(
     shadow_boost: float = 1.0,
     hi_gamma: float = 1.0,
     highlight_threshold: float = 0.4,
+    contrast: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray, float, float]:
     """Calcule l'image HDR (en nits) et la Gain Map (log2) associée à l'image de base SDR.
 
@@ -94,7 +95,10 @@ def compute_hdr_and_gain_map(
     # 4. Facteur de boost strictement monotone avec la luminance
     s_boost = max(shadow_boost, 1.0)
     boost = s_boost + (peak_boost - s_boost) * highlight_weight
-    boost = np.clip(boost, 1.0, peak_boost)
+    if contrast != 0.0:
+        contrast_factor = 1.0 + (L_sdr - 0.45) * contrast * 0.45
+        boost = boost * np.maximum(contrast_factor, 0.4)
+    boost = np.clip(boost, 1.0, peak_boost * 1.5)
 
     # Image HDR en nits
     hdr_nits = (sdr_lin * sdr_white * boost[:, :, None]).astype(np.float32)

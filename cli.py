@@ -33,6 +33,7 @@ def process_single_file(
     hi_gamma: float | None = None,
     shadow_boost: float | None = None,
     threshold: float | None = None,
+    contrast: float = 0.0,
     base_quality: int = 94,
     gainmap_quality: int = 88,
     save_gainmap: bool = False,
@@ -61,7 +62,7 @@ def process_single_file(
         final_shadow = shadow_boost or selected_preset.shadow_boost
         final_threshold = threshold or selected_preset.highlight_threshold
 
-        print(f"    Paramètres appliqués : Peak={final_peak:.0f} nits, Gamma={final_gamma:.2f}, ShadowBoost={final_shadow:.2f}x")
+        print(f"    Paramètres appliqués : Peak={final_peak:.0f} nits, Gamma={final_gamma:.2f}, ShadowBoost={final_shadow:.2f}x, Contraste={contrast:+.0%}")
 
         # Calcul HDR et Gain Map unifié
         hdr_nits, gain_log2, gmin, gmax = compute_hdr_and_gain_map(
@@ -72,7 +73,8 @@ def process_single_file(
             sdr_white=sdr_white,
             shadow_boost=final_shadow,
             hi_gamma=final_gamma,
-            highlight_threshold=final_threshold
+            highlight_threshold=final_threshold,
+            contrast=contrast,
         )
         print(f"    Gain map générée : Min={gmin:.2f} IL, Max=+{gmax:.2f} IL (Boost max ~{2**gmax:.1f}x)")
 
@@ -119,6 +121,7 @@ def main():
     parser.add_argument("--gamma", type=float, default=None, help="Exposant de courbe de boost")
     parser.add_argument("--shadow-boost", type=float, default=None, help="Facteur de boost des ombres (ex: 1.2)")
     parser.add_argument("--threshold", type=float, default=None, help="Seuil de hautes lumières [0..1]")
+    parser.add_argument("--contrast", type=float, default=0.0, help="Ajustement de contraste [-1.0..1.0] (défaut: 0.0)")
     parser.add_argument("--quality", type=int, default=94, help="Qualité JPEG base (défaut: 94)")
     parser.add_argument("--gainmap-quality", type=int, default=88, help="Qualité JPEG gain map (défaut: 88)")
     parser.add_argument("--save-gainmap", action="store_true", help="Enregistrer aussi la gain map en JPEG niveaux de gris")
@@ -141,6 +144,7 @@ def main():
             hi_gamma=args.gamma,
             shadow_boost=args.shadow_boost,
             threshold=args.threshold,
+            contrast=args.contrast,
             base_quality=args.quality,
             gainmap_quality=args.gainmap_quality,
             save_gainmap=args.save_gainmap,
@@ -163,6 +167,7 @@ def main():
                 hi_gamma=args.gamma,
                 shadow_boost=args.shadow_boost,
                 threshold=args.threshold,
+                contrast=args.contrast,
                 base_quality=args.quality,
                 gainmap_quality=args.gainmap_quality,
                 save_gainmap=args.save_gainmap,

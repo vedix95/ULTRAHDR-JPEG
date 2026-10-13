@@ -173,6 +173,17 @@ class TestUltraHDRStudio(unittest.TestCase):
         self.assertEqual(hdr_nits.shape, (512, 1024, 3))
         self.assertEqual(gain_log2.shape, (512, 1024))
 
+    def test_contrast_parameter(self):
+        from core.ultrahdr_engine import compute_hdr_and_gain_map
+        sdr_base = np.full((60, 60, 3), 200, dtype=np.uint8)
+        sdr_base[:30, :] = 40
+
+        _, gain_neutral, _, max_neutral = compute_hdr_and_gain_map(sdr_base, peak_nits=1200.0, contrast=0.0)
+        _, gain_contrast, _, max_contrast = compute_hdr_and_gain_map(sdr_base, peak_nits=1200.0, contrast=0.5)
+
+        self.assertGreaterEqual(max_contrast, max_neutral)
+
 
 if __name__ == "__main__":
     unittest.main()
+
