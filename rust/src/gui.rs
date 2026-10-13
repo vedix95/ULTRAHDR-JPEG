@@ -1676,7 +1676,7 @@ fn draw_tonal_histogram(ui: &mut egui::Ui, hist: Option<&LuminanceHistogram>, ac
     }
 
     if let Some(hist) = hist {
-        let max_val = hist.max_bin.max(1) as f32;
+        let max_val = hist.max_count.max(1) as f32;
         let num_bins = 256;
         for i in 0..num_bins {
             let bin_count = hist.bins[i];
@@ -1720,10 +1720,10 @@ fn draw_tat_hud(painter: &egui::Painter, pos: Pos2, zone: TonalZone, lum_pct: f3
     painter.circle_stroke(pos, 8.0, Stroke::new(1.0f32, Color32::from_rgba_premultiplied(255, 255, 255, 160)));
 
     // Ticks du réticule
-    painter.line_segment([Pos2::new(pos.x - 22.0, pos.y), Pos2::new(pos.x - 17.0, pos.y)], Stroke::new(2.0, Color32::from_rgb(0, 220, 255)));
-    painter.line_segment([Pos2::new(pos.x + 17.0, pos.y), Pos2::new(pos.x + 22.0, pos.y)], Stroke::new(2.0, Color32::from_rgb(0, 220, 255)));
-    painter.line_segment([Pos2::new(pos.x, pos.y - 22.0), Pos2::new(pos.x, pos.y - 17.0)], Stroke::new(2.0, Color32::from_rgb(0, 220, 255)));
-    painter.line_segment([Pos2::new(pos.x, pos.y + 17.0), Pos2::new(pos.x, pos.y + 22.0)], Stroke::new(2.0, Color32::from_rgb(0, 220, 255)));
+    painter.line_segment([Pos2::new(pos.x - 22.0, pos.y), Pos2::new(pos.x - 17.0, pos.y)], Stroke::new(2.0f32, Color32::from_rgb(0, 220, 255)));
+    painter.line_segment([Pos2::new(pos.x + 17.0, pos.y), Pos2::new(pos.x + 22.0, pos.y)], Stroke::new(2.0f32, Color32::from_rgb(0, 220, 255)));
+    painter.line_segment([Pos2::new(pos.x, pos.y - 22.0), Pos2::new(pos.x, pos.y - 17.0)], Stroke::new(2.0f32, Color32::from_rgb(0, 220, 255)));
+    painter.line_segment([Pos2::new(pos.x, pos.y + 17.0), Pos2::new(pos.x, pos.y + 22.0)], Stroke::new(2.0f32, Color32::from_rgb(0, 220, 255)));
 
     // 2. Bulle flottante (HUD Pill)
     let hud_pos = Pos2::new(pos.x + 26.0, pos.y - 14.0);

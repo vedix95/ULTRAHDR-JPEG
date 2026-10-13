@@ -112,7 +112,7 @@ pub fn load_image_from_bytes(bytes: &[u8], filename: &str, file_size_bytes: u64)
                 raw_lin.push(if p[1].is_finite() { p[1].max(0.0) } else { 0.0 });
                 raw_lin.push(if p[2].is_finite() { p[2].max(0.0) } else { 0.0 });
             }
-            process_float_hdr(raw_lin, width, height, &format_str, filename, file_size_bytes)
+            process_float_hdr(raw_lin, width, height, &format_str, filename, file_size_bytes, exif_bytes.clone())
         }
         DynamicImage::ImageRgba32F(rgba32f) => {
             let mut raw_lin = Vec::with_capacity(n_pixels * 3);
@@ -121,7 +121,7 @@ pub fn load_image_from_bytes(bytes: &[u8], filename: &str, file_size_bytes: u64)
                 raw_lin.push(if p[1].is_finite() { p[1].max(0.0) } else { 0.0 });
                 raw_lin.push(if p[2].is_finite() { p[2].max(0.0) } else { 0.0 });
             }
-            process_float_hdr(raw_lin, width, height, &format_str, filename, file_size_bytes)
+            process_float_hdr(raw_lin, width, height, &format_str, filename, file_size_bytes, exif_bytes.clone())
         }
 
         // ── Formats 16-bit Entier (TIFF 16-bit, PNG 16-bit) ──

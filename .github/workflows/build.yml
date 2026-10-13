@@ -3,11 +3,72 @@ name: CI / CD Build & Multiplatform Release
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
+  test-python:
+    name: Test Python Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Python unit tests
+        run: python tests/test_all.py
+
+  build-linux:
+    name: Linux Native (x86_64-unknown-linux-gnu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Run Tests
+        run: |
+          cd rust
+          cargo test
+
+      - name: Build UltraHDR Linux Release
+        run: |
+          cd rust
+          cargo build --release
+
+      - name: Upload Linux Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ultrahdr-linux-x64
+          path: rust/target/release/ultrahdr
+
   build-windows:
     name: Windows Native (x86_64-pc-windows-msvc)
     runs-on: windows-latest
@@ -23,6 +84,11 @@ jobs:
         with:
           workspaces: rust
 
+      - name: Run Tests
+        run: |
+          cd rust
+          cargo test
+
       - name: Build UltraHDR Studio Release
         run: |
           cd rust
@@ -34,33 +100,38 @@ jobs:
           name: ultrahdr-windows-x64
           path: rust/target/release/ultrahdr.exe
 
-  build-linux:
-    name: Linux Musl Static (x86_64-unknown-linux-musl)
+  release:
+    name: Publish GitHub Release
+    needs: [build-linux, build-windows, test-python]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install musl-tools
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-
-      - name: Install Rust toolchain with musl target
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
-
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-
-      - name: Build UltraHDR Linux Musl Release
-        run: |
-          cd rust
-          cargo build --release --target x86_64-unknown-linux-musl
-
-      - name: Upload Linux Binary
-        uses: actions/upload-artifact@v4
+      - name: Download Linux Binary
+        uses: actions/download-artifact@v4
         with:
           name: ultrahdr-linux-x64
-          path: rust/target/x86_64-unknown-linux-musl/release/ultrahdr
+          path: release-linux
+
+      - name: Download Windows Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ultrahdr-windows-x64
+          path: release-windows
+
+      - name: Package Binaries
+        run: |
+          chmod +x release-linux/ultrahdr
+          tar -czf ultrahdr-linux-x64.tar.gz -C release-linux ultrahdr
+          zip -j ultrahdr-windows-x64.zip release-windows/ultrahdr.exe
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ultrahdr-linux-x64.tar.gz
+            ultrahdr-windows-x64.zip
+          generate_release_notes: true
+

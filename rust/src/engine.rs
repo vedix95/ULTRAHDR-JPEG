@@ -82,6 +82,15 @@ impl TonalZone {
             TonalZone::Whites => "Blancs (Whites / HDR)",
         }
     }
+
+    pub fn name_fr(&self) -> &'static str {
+        match self {
+            TonalZone::Blacks => "Noirs",
+            TonalZone::Shadows => "Ombres",
+            TonalZone::Highlights => "Hautes Lumières",
+            TonalZone::Whites => "Blancs",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

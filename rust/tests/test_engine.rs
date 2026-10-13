@@ -2,6 +2,7 @@ use ultrahdr::analyzer::analyze_image_potential;
 use ultrahdr::engine::{
     assemble_ultra_hdr_jpeg, compute_hdr_and_gain_map, encode_gain_map_jpeg,
     encode_rgb_jpeg, generate_nits_heatmap, simulate_hdr_on_sdr, srgb_to_linear,
+    TonalParams,
 };
 
 #[test]
@@ -21,6 +22,8 @@ fn test_gain_map_math() {
         1.0,
         1.0,
         0.4,
+        TonalParams::default(),
+        0.0,
     );
 
     assert_eq!(res.gain_log2.len(), (w * h) as usize);
@@ -54,12 +57,14 @@ fn test_assemble_ultra_hdr_jpeg() {
         1.15,
         1.0,
         0.5,
+        TonalParams::default(),
+        0.0,
     );
 
     let base_jpeg = encode_rgb_jpeg(&sdr_u8, w, h, 94).expect("encodage base");
     let gm_jpeg = encode_gain_map_jpeg(&res.gain_log2, res.gain_min, res.gain_max, w, h, 88).expect("encodage gain map");
 
-    let uhdr_bytes = assemble_ultra_hdr_jpeg(&base_jpeg, &gm_jpeg, res.gain_min, res.gain_max, 1200.0, 203.0);
+    let uhdr_bytes = assemble_ultra_hdr_jpeg(&base_jpeg, &gm_jpeg, res.gain_min, res.gain_max, 1200.0, 203.0, None);
 
     assert!(uhdr_bytes.len() > 1000);
     // Doit commencer par le marqueur SOI JPEG (0xFF 0xD8)
