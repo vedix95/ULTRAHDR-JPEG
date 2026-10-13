@@ -342,19 +342,10 @@ impl UltraHdrApp {
 
         let default_out = format!("{}_UltraHDR.jpg", stem);
 
-        let out_path = {
-            #[cfg(windows)]
-            {
-                rfd::FileDialog::new()
-                    .set_file_name(&default_out)
-                    .add_filter("JPEG Ultra HDR (*.jpg)", &["jpg", "jpeg"])
-                    .save_file()
-            }
-            #[cfg(not(windows))]
-            {
-                Some(PathBuf::from(&default_out))
-            }
-        };
+        let out_path = rfd::FileDialog::new()
+            .set_file_name(&default_out)
+            .add_filter("JPEG Ultra HDR (*.jpg)", &["jpg", "jpeg"])
+            .save_file();
 
         let target_path = match out_path {
             Some(p) => p,
@@ -677,18 +668,11 @@ impl eframe::App for UltraHdrApp {
                         .rounding(Rounding::same(6.0));
 
                         if ui.add(btn_open).clicked() {
-                            #[cfg(windows)]
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Images (*.jpg, *.png, *.webp, *.hdr, *.exr, *.tif)", &["jpg", "jpeg", "png", "webp", "hdr", "exr", "tif", "tiff", "bmp"])
+                                .pick_file()
                             {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Images (*.jpg, *.png, *.webp, *.hdr, *.exr, *.tif)", &["jpg", "jpeg", "png", "webp", "hdr", "exr", "tif", "tiff", "bmp"])
-                                    .pick_file()
-                                {
-                                    self.load_file(&path, ctx);
-                                }
-                            }
-                            #[cfg(not(windows))]
-                            {
-                                self.show_open_dialog = true;
+                                self.load_file(&path, ctx);
                             }
                         }
                     });
@@ -733,7 +717,6 @@ impl eframe::App for UltraHdrApp {
                         ui.label("Dossier source :");
                         ui.text_edit_singleline(&mut self.batch_input_dir);
                         if ui.button("Parcourir...").clicked() {
-                            #[cfg(windows)]
                             if let Some(path) = rfd::FileDialog::new().pick_folder() {
                                 self.batch_input_dir = path.to_string_lossy().to_string();
                             }
@@ -743,7 +726,6 @@ impl eframe::App for UltraHdrApp {
                         ui.label("Dossier cible (opt.) :");
                         ui.text_edit_singleline(&mut self.batch_output_dir);
                         if ui.button("Parcourir...").clicked() {
-                            #[cfg(windows)]
                             if let Some(path) = rfd::FileDialog::new().pick_folder() {
                                 self.batch_output_dir = path.to_string_lossy().to_string();
                             }
@@ -1407,18 +1389,11 @@ impl UltraHdrApp {
                             .rounding(Rounding::same(6.0));
 
                             if ui.add_sized([200.0, 36.0], btn_browse).clicked() {
-                                #[cfg(windows)]
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("Images (*.jpg, *.png, *.webp, *.hdr, *.exr, *.tif)", &["jpg", "jpeg", "png", "webp", "hdr", "exr", "tif", "tiff", "bmp"])
+                                    .pick_file()
                                 {
-                                    if let Some(path) = rfd::FileDialog::new()
-                                        .add_filter("Images (*.jpg, *.png, *.webp, *.hdr, *.exr, *.tif)", &["jpg", "jpeg", "png", "webp", "hdr", "exr", "tif", "tiff", "bmp"])
-                                        .pick_file()
-                                    {
-                                        self.load_file(&path, ctx);
-                                    }
-                                }
-                                #[cfg(not(windows))]
-                                {
-                                    self.show_open_dialog = true;
+                                    self.load_file(&path, ctx);
                                 }
                             }
                         });
