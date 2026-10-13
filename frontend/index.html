@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UltraHDR Studio — Éditeur Photo vers JPEG Ultra HDR</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body class="dark-theme">
+    <div class="app-container">
+        <!-- Barre supérieure -->
+        <header class="app-header">
+            <div class="header-left">
+                <div class="app-logo">
+                    <span class="logo-icon">✨</span>
+                    <span class="logo-title">Ultra<strong>HDR</strong> Studio</span>
+                </div>
+                <div id="display-badge" class="badge-status badge-loading">
+                    <span class="status-dot"></span>
+                    <span id="display-status-text">Détection de l'écran...</span>
+                </div>
+            </div>
+
+            <div class="header-center" id="file-info-bar" style="display: none;">
+                <span id="info-filename" class="info-pill filename">photo.jpg</span>
+                <span id="info-format" class="info-pill">RAW</span>
+                <span id="info-res" class="info-pill">3840×2160</span>
+                <span id="info-stops" class="info-pill stops">+2.4 EV Boost</span>
+            </div>
+
+            <div class="header-right">
+                <input type="file" id="file-input" style="display: none;" accept="*/*">
+                <button id="btn-open-file" class="btn btn-secondary">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    Ouvrir une image
+                </button>
+                <button id="btn-export-main" class="btn btn-primary" disabled>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Exporter JPEG Ultra HDR
+                </button>
+            </div>
+        </header>
+
+        <!-- Notification de raccourci HDR si écran compatible mais désactivé -->
+        <div id="hdr-shortcut-alert" class="alert-banner" style="display: none;">
+            <span class="alert-icon">💡</span>
+            <span id="hdr-shortcut-text">Votre écran supporte le HDR physique ! Appuyez sur <strong>Win + Alt + B</strong> pour l'activer dans Windows.</span>
+            <button class="alert-close" onclick="this.parentElement.style.display='none'">×</button>
+        </div>
+
+        <!-- Corps principal -->
+        <main class="app-main">
+            <!-- Zone d'affichage image -->
+            <div class="viewport-area">
+                <!-- Zone Glisser-Déposer initiale -->
+                <div id="dropzone" class="dropzone-empty">
+                    <div class="dropzone-box">
+                        <div class="dropzone-icon">📷</div>
+                        <h2>Glissez-déposez n'importe quelle photo ici</h2>
+                        <p class="dropzone-sub">Prend en charge tous les formats : <strong>Camera RAW & DNG</strong> (Canon, Nikon, Sony, Fuji...), <strong>HDR Natif</strong> (EXR, .HDR), <strong>Apple HEIC</strong>, <strong>TIFF 16-bit</strong>, <strong>JPEG, PNG, WebP</strong></p>
+                        <button class="btn btn-primary btn-large" onclick="document.getElementById('file-input').click()">
+                            Sélectionner un fichier
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Visionneuse active -->
+                <div id="viewer-container" class="viewer-container" style="display: none;">
+                    <!-- Barre d'outils de visualisation -->
+                    <div class="viewer-toolbar">
+                        <div class="view-mode-selector">
+                            <button class="mode-btn active" data-mode="split" title="Glissière Avant / Après">
+                                ↔ Glissière Avant / Après
+                            </button>
+                            <button class="mode-btn" data-mode="side_by_side" title="Côte à côte">
+                                ◫ Côte à côte
+                            </button>
+                            <button class="mode-btn" data-mode="true_ultrahdr" title="Vrai Ultra HDR Direct (Chromium Hardware)">
+                                ✨ Vrai Ultra HDR Direct
+                            </button>
+                            <button class="mode-btn" data-mode="gain_map" title="Gain Map Niveaux de Gris">
+                                ◐ Gain Map
+                            </button>
+                            <button class="mode-btn" data-mode="heatmap" title="Carte Thermique Nits">
+                                🔥 Carte Nits
+                            </button>
+                        </div>
+
+                        <div class="zoom-controls">
+                            <button id="btn-zoom-fit" class="tool-btn" title="Ajuster à l'écran">⛶ Ajuster</button>
+                            <button id="btn-zoom-100" class="tool-btn" title="Taille réelle 100%">1:1</button>
+                            <button id="btn-zoom-out" class="tool-btn" title="Zoomer arrière">-</button>
+                            <span id="zoom-level">100%</span>
+                            <button id="btn-zoom-in" class="tool-btn" title="Zoomer avant">+</button>
+                        </div>
+                    </div>
+
+                    <!-- Écran d'affichage interactif -->
+                    <div class="canvas-viewport" id="canvas-viewport">
+                        <!-- Mode Split Slider -->
+                        <div id="split-view-wrapper" class="split-wrapper">
+                            <!-- Image APRÈS (Ultra HDR) -->
+                            <div class="image-layer image-after">
+                                <img id="img-after" src="" alt="Après - Ultra HDR">
+                                <span class="layer-badge badge-after">Après : Ultra HDR</span>
+                            </div>
+                            <!-- Image AVANT (SDR original découpé) -->
+                            <div class="image-layer image-before" id="split-before-layer">
+                                <img id="img-before" src="" alt="Avant - SDR">
+                                <span class="layer-badge badge-before">Avant : SDR Original</span>
+                            </div>
+                            <!-- Poignée de la glissière déplaçable -->
+                            <div class="split-handle" id="split-handle">
+                                <div class="split-line"></div>
+                                <div class="split-knob">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/><polyline points="9 18 3 12 9 6"/></svg>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/><polyline points="15 18 21 12 15 6"/></svg>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Mode Côte à Côte -->
+                        <div id="side-by-side-wrapper" class="side-wrapper" style="display: none;">
+                            <div class="side-panel">
+                                <span class="side-label">Avant (SDR Original)</span>
+                                <img id="img-side-before" src="" alt="SDR">
+                            </div>
+                            <div class="side-panel">
+                                <span class="side-label">Après (Ultra HDR Rendu)</span>
+                                <img id="img-side-after" src="" alt="Ultra HDR">
+                            </div>
+                        </div>
+
+                        <!-- Mode Single Image (Gain Map / Heatmap / Direct Ultra HDR) -->
+                        <div id="single-view-wrapper" class="single-wrapper" style="display: none;">
+                            <img id="img-single" src="" alt="Vue Unique">
+                            <div id="heatmap-legend" class="heatmap-legend" style="display: none;">
+                                <span>203 nits (SDR)</span>
+                                <div class="legend-bar"></div>
+                                <span id="legend-max-nits">1200+ nits</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Panneau Latéral de Contrôle (Entièrement Déroulant & Repliable) -->
+            <aside class="sidebar-panel" id="sidebar-panel">
+                <!-- En-tête du panneau latéral -->
+                <div class="sidebar-top-bar">
+                    <span class="sidebar-heading">Panneau d'Édition</span>
+                    <div class="sidebar-actions">
+                        <button id="btn-expand-all" class="text-btn">Tout déplier</button>
+                        <span class="sep">•</span>
+                        <button id="btn-collapse-all" class="text-btn">Tout replier</button>
+                    </div>
+                </div>
+
+                <!-- 1. Proposition Intelligente Automatique -->
+                <div class="control-card card-proposal" id="card-proposal">
+                    <div class="card-header accordion-toggle" title="Cliquer pour replier/déplier">
+                        <div class="card-title-group">
+                            <span class="chevron">▾</span>
+                            <span class="card-icon">💡</span>
+                            <h3>Proposition Automatique</h3>
+                        </div>
+                        <span id="proposal-score" class="badge-score">--%</span>
+                    </div>
+                    <div class="card-body">
+                        <h4 id="proposal-title">En attente d'image...</h4>
+                        <p id="proposal-text" class="proposal-desc">Chargez une photo pour analyser son potentiel Ultra HDR.</p>
+                        
+                        <div class="proposal-meta-grid">
+                            <div class="meta-item">
+                                <span class="meta-label">Hautes Lumières :</span>
+                                <span id="meta-highlights" class="meta-val">--%</span>
+                            </div>
+                            <div class="meta-item">
+                                <span class="meta-label">Contraste :</span>
+                                <span id="meta-contrast" class="meta-val">--:1</span>
+                            </div>
+                        </div>
+
+                        <button id="btn-apply-proposal" class="btn btn-highlight full-width">
+                            ✨ Appliquer la proposition recommandée
+                        </button>
+
+                        <div class="preset-selector-row">
+                            <label for="select-preset">Profils prédéfinis :</label>
+                            <select id="select-preset" class="form-select">
+                                <option value="sunset">Coucher de Soleil & Contre-Jour</option>
+                                <option value="night_neon">Nuit, Éclairages & Néons</option>
+                                <option value="landscape">Paysage & Ciel Lumineux</option>
+                                <option value="studio">Portrait & Reflets Doux</option>
+                                <option value="native_hdr">Capteur RAW / Haute Fidélité</option>
+                                <option value="moderate">Subtil / Anti-Bruit</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. Simulation d'Écran SDR (si l'écran ne supporte pas le HDR) -->
+                <div class="control-card card-simulation" id="card-simulation">
+                    <div class="card-header accordion-toggle" title="Cliquer pour replier/déplier">
+                        <div class="card-title-group">
+                            <span class="chevron">▾</span>
+                            <span class="card-icon">🖥️</span>
+                            <h3>Simulation Écran SDR</h3>
+                        </div>
+                        <span class="badge-sim">Max Headroom</span>
+                    </div>
+                    <div class="card-body">
+                        <p class="section-desc">Simule la plage dynamique maximale récupérée sur votre écran standard :</p>
+                        
+                        <!-- Curseur d'exposition EV -->
+                        <div class="control-group">
+                            <div class="label-row">
+                                <label for="slider-ev">Exposition Virtuelle (EV) :</label>
+                                <span id="val-ev" class="val-pill">0.0 EV</span>
+                            </div>
+                            <input type="range" id="slider-ev" min="-3.0" max="3.0" step="0.1" value="0.0">
+                            <div class="range-marks">
+                                <span>-3 EV (Hautes Lumières)</span>
+                                <span>0 EV</span>
+                                <span>+3 EV</span>
+                            </div>
+                        </div>
+
+                        <!-- Algorithme de Tone Mapping -->
+                        <div class="control-group">
+                            <label for="select-tonemap">Moteur de Tone-Mapping :</label>
+                            <select id="select-tonemap" class="form-select">
+                                <option value="aces">ACES Filmic (Cinématique & Équilibré)</option>
+                                <option value="reinhard">Reinhard Étendu (Progressif)</option>
+                                <option value="exposure">Directe (Observation Écrêtage)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 3. Paramètres Ultra HDR Fins -->
+                <div class="control-card" id="card-settings">
+                    <div class="card-header accordion-toggle" title="Cliquer pour replier/déplier">
+                        <div class="card-title-group">
+                            <span class="chevron">▾</span>
+                            <span class="card-icon">⚙️</span>
+                            <h3>Réglages Ultra HDR</h3>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <!-- Peak Nits -->
+                        <div class="control-group">
+                            <div class="label-row">
+                                <label for="slider-peak-nits">Luminance de Crête :</label>
+                                <span id="val-peak-nits" class="val-pill">1000 nits</span>
+                            </div>
+                            <input type="range" id="slider-peak-nits" min="400" max="4000" step="50" value="1000">
+                            <div class="range-marks">
+                                <span>400 nits</span>
+                                <span>1000 (OLED/HDR10)</span>
+                                <span>4000 nits</span>
+                            </div>
+                        </div>
+
+                        <!-- Gamma des Hautes Lumières -->
+                        <div class="control-group">
+                            <div class="label-row">
+                                <label for="slider-gamma">Courbe de Boost (Gamma) :</label>
+                                <span id="val-gamma" class="val-pill">1.0</span>
+                            </div>
+                            <input type="range" id="slider-gamma" min="0.5" max="2.2" step="0.05" value="1.0">
+                        </div>
+
+                        <!-- Boost des Ombres -->
+                        <div class="control-group">
+                            <div class="label-row">
+                                <label for="slider-shadow">Préservation Ombres :</label>
+                                <span id="val-shadow" class="val-pill">1.15×</span>
+                            </div>
+                            <input type="range" id="slider-shadow" min="1.0" max="2.0" step="0.05" value="1.15">
+                        </div>
+
+                        <!-- Seuil des Hautes Lumières -->
+                        <div class="control-group">
+                            <div class="label-row">
+                                <label for="slider-threshold">Seuil d'Élévation :</label>
+                                <span id="val-threshold" class="val-pill">0.50</span>
+                            </div>
+                            <input type="range" id="slider-threshold" min="0.0" max="0.95" step="0.05" value="0.50">
+                        </div>
+
+                        <div class="gain-stat-box">
+                            <div class="stat-col">
+                                <span class="stat-lbl">Gain Min</span>
+                                <span id="stat-gain-min" class="stat-val">0.00 IL</span>
+                            </div>
+                            <div class="stat-col">
+                                <span class="stat-lbl">Gain Max</span>
+                                <span id="stat-gain-max" class="stat-val">+2.30 IL</span>
+                            </div>
+                            <div class="stat-col">
+                                <span class="stat-lbl">Multiplicateur</span>
+                                <span id="stat-multiplier" class="stat-val">4.9×</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 4. Exportation -->
+                <div class="control-card card-export" id="card-export">
+                    <div class="card-header accordion-toggle" title="Cliquer pour replier/déplier">
+                        <div class="card-title-group">
+                            <span class="chevron">▾</span>
+                            <span class="card-icon">💾</span>
+                            <h3>Exportation</h3>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="control-group">
+                            <div class="label-row">
+                                <label for="slider-quality">Qualité JPEG Base :</label>
+                                <span id="val-quality" class="val-pill">94%</span>
+                            </div>
+                            <input type="range" id="slider-quality" min="75" max="100" step="1" value="94">
+                        </div>
+
+                        <div class="control-group">
+                            <div class="label-row">
+                                <label for="slider-gm-quality">Qualité Gain Map :</label>
+                                <span id="val-gm-quality" class="val-pill">88%</span>
+                            </div>
+                            <input type="range" id="slider-gm-quality" min="65" max="100" step="1" value="88">
+                        </div>
+
+                        <button id="btn-export-aside" class="btn btn-primary full-width" disabled>
+                            Enregistrer le JPEG Ultra HDR
+                        </button>
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

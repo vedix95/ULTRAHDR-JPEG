@@ -1,0 +1,59 @@
+# ── Rust build artifacts ──
+target/
+**/target/
+Cargo.lock.temp
+*.pdb
+
+# ── Local cargo configs & credentials ──
+.cargo/
+**/.cargo/
+rust/win_libs/
+rust/musl_libs/
+
+# ── Python caches & environments ──
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist-python/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+ENV/
+env/
+
+# ── Temporary & Test files ──
+*.log
+*.tmp
+*.bak
+temp/
+tmp/
+temp_uhdr*/
+test_cli*
+
+# ── OS & Editor specific ──
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
