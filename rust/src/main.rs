@@ -24,7 +24,7 @@ use loader::load_image;
 
 #[derive(Parser, Debug)]
 #[command(name = "ultrahdr")]
-#[command(version = "1.0.1")]
+#[command(version = "1.0.0")]
 #[command(about = "UltraHDR Studio — Éditeur et Générateur Ultra HDR / ISO 21496-1 en Rust pur")]
 struct Cli {
     /// Fichier image ou dossier d'images (si omis, ouvre l'interface graphique native)

@@ -1,7 +1,6 @@
 @echo off
 title UltraHDR Studio
 echo ==========================================================
-echo        UltraHDR Studio - Lancement de l'application
+echo        UltraHDR Studio — Interface Native Rust
 echo ==========================================================
-python "%~dp0main.py"
-pause
+start "" "%~dp0dist\windows\ultrahdr.exe"

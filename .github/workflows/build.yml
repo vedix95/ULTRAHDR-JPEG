@@ -12,27 +12,6 @@ permissions:
   contents: write
 
 jobs:
-  test-python:
-    name: Test Python Suite
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run Python unit tests
-        run: python tests/test_all.py
-
   build-linux:
     name: Linux Native (x86_64-unknown-linux-gnu)
     runs-on: ubuntu-latest
@@ -102,7 +81,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [build-linux, build-windows, test-python]
+    needs: [build-linux, build-windows]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
