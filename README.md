@@ -1,13 +1,13 @@
-# ✨ UltraHDR Studio (Google Ultra HDR & ISO 21496-1 en Rust pur)
+# ✨ UltraHDR Studio — Moteur & Studio Photo Ultra HDR en Rust Pur
 
 [![CI / CD Build & Multiplatform Release](https://github.com/vedix95/ULTRAHDR-JPEG/actions/workflows/build.yml/badge.svg)](https://github.com/vedix95/ULTRAHDR-JPEG/actions/workflows/build.yml)
-[![GitHub Release](https://img.shields.io/github/v/release/vedix95/ULTRAHDR-JPEG?color=blue&label=Release)](https://github.com/vedix95/ULTRAHDR-JPEG/releases)
+[![GitHub Release](https://img.shields.io/github/v/release/vedix95/ULTRAHDR-JPEG?color=blue&label=Release%20v1.0.0)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.0.0)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-blue.svg)](https://github.com/vedix95/ULTRAHDR-JPEG/releases)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-blue.svg)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.0.0)
 
 > **Éditeur et générateur photographique Ultra HDR professionnel en Rust pur**, 100% conforme aux standards internationaux **ISO 21496-1** et **Google Ultra HDR (v1.0)**.
-> Disponible sous forme d'une **application de bureau native haute performance** (zéro Python, zéro Electron, zéro navigateur web, rendu matériel GPU wgpu DirectX 12 / Wayland / Vulkan) et d'un mode **CLI multithreadé ultra-rapide (Rayon)**.
+> Développé avec une **architecture 100% native** (zéro dépendance Python, zéro Electron, zéro WebView, rendu direct matériel GPU via `wgpu` / DirectX 12 / Vulkan / Wayland) et un moteur **CLI multithreadé ultra-rapide (Rayon)**.
 
 ---
 
@@ -17,6 +17,17 @@ Le format **JPEG Ultra HDR** réconcilie la compatibilité universelle et l'imag
 1. **Compatibilité universelle SDR** : Tout visualiseur classique, navigateur web ou écran SDR affiche l'image JPEG de base sans aucune altération.
 2. **Gain Map ISO 21496-1 intégrée** : Une carte de gain secondaire encodée en niveaux de gris est encapsulée dans le fichier via les métadonnées Adobe XMP (`hdrgm`) et le format multi-images CIPA DC-007 MPF APP2.
 3. **Rendu HDR Éclatant** : Sur les appareils compatibles (écrans OLED/Mini-LED HDR, smartphones Android récents, Google Chrome, iOS 18+, macOS, Windows 11 HDR), la carte de gain est appliquée dynamiquement pour restituer jusqu'à **10 000 nits** d'éclat lumineux dans les reflets et les crêtes spéculaires.
+
+```mermaid
+flowchart LR
+    A["Image SDR ou RAW (JPEG, PNG, DNG, EXR)"] --> B["Moteur Rust Multithreadé"]
+    B --> C["JPEG SDR de base (Qualité 94)"]
+    B --> D["Gain Map Log2 (ISO 21496-1)"]
+    C & D --> E["Assemblage Binaire UltraHDR"]
+    E --> F["Fichier final JPEG Ultra HDR"]
+    F --> G["Écrans SDR : Affichage JPEG normal 100% fidèle"]
+    F --> H["Écrans HDR : Éclat spéculaire jusqu'à 10 000 nits"]
+```
 
 ---
 
@@ -28,7 +39,7 @@ Le format **JPEG Ultra HDR** réconcilie la compatibilité universelle et l'imag
   - **Blancs (Whites)** : module directement l'intensité du pic de boost HDR sur les éclats spéculaires (jusqu'à x2.7 de boost).
   - **Hautes Lumières (Highlights)** : abaisse ou relève le seuil de transition vers les hautes luminances.
   - **Ombres (Shadows)** : rehausse ou densifie les pénombres.
-  - **Noirs (Blacks)** : ancre la densité du point noir absolu.
+  - **Noirs (Blacks)** : ancre la densité du point noir absolu pour exploiter les noirs profonds OLED.
 - **Vibrance & Saturation HDR** :
   - **Saturation HDR** : ajuste uniformément l'intensité chromatique globale.
   - **Vibrance HDR** : protège les tons chair et les couleurs déjà très vives tout en rehaussant les teintes douces, empêchant le délavage blanc des crêtes lumineuses HDR.
@@ -36,8 +47,8 @@ Le format **JPEG Ultra HDR** réconcilie la compatibilité universelle et l'imag
 
 ### 🖥️ Support Matériel HDR & Linux Wayland Natif
 - **Détection Automatique Matérielle EDID (Linux & Windows)** :
-  - Analyse directe des blocs EDID CTA-861 dans `/sys/class/drm` sous Linux (détecte la dalle OLED, la luminance maximale de crête, les noirs absolus et l'espace BT.2020 10-bit).
-  - Badge interactif dans l'en-tête indiquant l'état matériel de l'écran.
+  - Analyse directe des blocs EDID CTA-861 dans `/sys/class/drm` sous Linux (détecte la dalle OLED, la luminance maximale de crête en nits, les noirs absolus et l'espace BT.2020 10-bit).
+  - Badge interactif dans l'en-tête indiquant en temps réel l'état matériel de l'écran.
 - **Forçage Wayland Natif** :
   - Active directement le protocole Wayland (`WINIT_UNIX_BACKEND=wayland`) sans passer par XWayland pour garantir la fidélité colorimétrique 10-bit.
 - **Moteur d'Aperçu « Éclat Ultra HDR » (Vivid Pop)** :
@@ -65,14 +76,17 @@ Le format **JPEG Ultra HDR** réconcilie la compatibilité universelle et l'imag
 
 | Raccourci | Action |
 | :--- | :--- |
+| **<kbd>Ctrl</kbd> + <kbd>O</kbd>** | Ouvrir une image |
+| **<kbd>Ctrl</kbd> + <kbd>S</kbd>** | Exporter l'image Ultra HDR finale |
 | **<kbd>Espace</kbd>** / **<kbd>\</kbd>** *(maintenir)* | **Afficher instantanément l'image originale SDR** (Hold to Compare) |
 | **<kbd>\</kbd>** / **<kbd>/</kbd>** *(appui simple)* | Basculer la vue comparaison Original SDR / Ultra HDR |
 | **<kbd>M</kbd>** | Changer de mode d'affichage (`Split` → `SideBySide` → `FullHdr` → `GainMap` → `Heatmap`) |
 | **<kbd>T</kbd>** | Activer / désactiver l'**Outil Ciblé Direct (TAT)** sur l'image |
 | **<kbd>Tab</kbd>** | Afficher / masquer le panneau latéral d'outils |
 | **<kbd>F11</kbd>** | Basculer en mode Plein Écran |
+| **<kbd>R</kbd>** | Réinitialiser tous les réglages par défaut |
 | **<kbd>Échap</kbd>** | Quitter l'outil ciblé ou réinitialiser le mode comparaison |
-| **Molette Souris** | Zoom avant / arrière fluide |
+| **Molette Souris** | Zoom avant / arrière fluide (20% à 800%) |
 | **Clic Droit / Milieu + Glisser** | Déplacement panoramique (Pan) dans l'image |
 
 ---
@@ -130,6 +144,14 @@ ultrahdr photo.raw --analyze
 ultrahdr /chemin/vers/dossier/ -o /chemin/vers/sortie/ --preset landscape
 ```
 
+### Profils Prédéfinis Disponibles :
+- `sunset` : Coucher de soleil (teintes chaudes, hautes lumières intenses, reflets solaires).
+- `night_neon` : Nuit & Néons (noirs profonds, néons et lumières artificielles survoltées).
+- `landscape` : Paysage naturel (ciel préservé, ombres débouchées, contraste équilibré).
+- `studio` : Portrait & Studio (préservation des tons chair, reflets doux et naturels).
+- `native_hdr` : Capture HDR native (pour fichiers RAW, DNG ou OpenEXR avec dynamique étendue).
+- `moderate` : Rehaussement discret et naturel pour tout type d'image.
+
 ---
 
 ## 📦 Compilation depuis les Sources
@@ -141,7 +163,16 @@ ultrahdr /chemin/vers/dossier/ -o /chemin/vers/sortie/ --preset landscape
   sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
   ```
 
-### Compilation
+### Scripts Prêts à l'Emploi
+- **Sous Linux** :
+  ```bash
+  chmod +x build_all.sh
+  ./build_all.sh
+  ```
+- **Sous Windows** :
+  Double-cliquez sur `build_all.bat`.
+
+### Compilation Manuelle avec Cargo
 ```bash
 git clone https://github.com/vedix95/ULTRAHDR-JPEG.git
 cd ULTRAHDR-JPEG/rust
