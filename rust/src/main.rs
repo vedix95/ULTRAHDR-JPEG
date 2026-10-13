@@ -63,6 +63,14 @@ struct Cli {
     #[arg(long = "contrast")]
     contrast: Option<f32>,
 
+    /// Ajustement de saturation [-1.0..1.0] (défaut: 0.0)
+    #[arg(long = "saturation")]
+    saturation: Option<f32>,
+
+    /// Ajustement de vibrance [-1.0..1.0] (défaut: 0.0)
+    #[arg(long = "vibrance")]
+    vibrance: Option<f32>,
+
     /// Qualité JPEG de l'image SDR de base (défaut: 94)
     #[arg(long = "quality", default_value_t = 94)]
     quality: u8,
@@ -98,6 +106,8 @@ fn process_single_file(
     shadow_boost: Option<f32>,
     threshold: Option<f32>,
     contrast: Option<f32>,
+    saturation: Option<f32>,
+    vibrance: Option<f32>,
     quality: u8,
     gainmap_quality: u8,
     save_gainmap: bool,
@@ -148,10 +158,12 @@ fn process_single_file(
     let final_shadow = shadow_boost.unwrap_or(selected_preset.shadow_boost);
     let final_thresh = threshold.unwrap_or(selected_preset.highlight_threshold);
     let final_contrast = contrast.unwrap_or(0.0);
+    let final_saturation = saturation.unwrap_or(0.0);
+    let final_vibrance = vibrance.unwrap_or(0.0);
 
     println!(
-        "    Paramètres appliqués : Peak={:.0} nits, Gamma={:.2}, ShadowBoost={:.2}x, Thresh={:.2}, Contraste={:+.0}%",
-        final_peak, final_gamma, final_shadow, final_thresh, final_contrast * 100.0
+        "    Paramètres appliqués : Peak={:.0} nits, Gamma={:.2}, ShadowBoost={:.2}x, Thresh={:.2}, Contraste={:+.0}%, Sat={:+.0}%, Vib={:+.0}%",
+        final_peak, final_gamma, final_shadow, final_thresh, final_contrast * 100.0, final_saturation * 100.0, final_vibrance * 100.0
     );
 
     // 1. Calcul HDR et Gain Map
@@ -168,6 +180,8 @@ fn process_single_file(
         final_thresh,
         TonalParams {
             contrast: final_contrast,
+            saturation: final_saturation,
+            vibrance: final_vibrance,
             ..Default::default()
         },
         0.40,
@@ -179,7 +193,8 @@ fn process_single_file(
     );
 
     // 2. Encodage JPEG SDR de base
-    let base_jpeg = match encode_rgb_jpeg(&loaded.sdr_uint8, loaded.width, loaded.height, quality) {
+    let sdr_to_encode = res.sdr_processed.as_deref().unwrap_or(&loaded.sdr_uint8);
+    let base_jpeg = match encode_rgb_jpeg(sdr_to_encode, loaded.width, loaded.height, quality) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("    [!] Erreur encodage base JPEG : {}", e);
@@ -275,6 +290,8 @@ fn main() {
             cli.shadow_boost,
             cli.threshold,
             cli.contrast,
+            cli.saturation,
+            cli.vibrance,
             cli.quality,
             cli.gainmap_quality,
             cli.save_gainmap,
@@ -320,6 +337,8 @@ fn main() {
                     cli.shadow_boost,
                     cli.threshold,
                     cli.contrast,
+                    cli.saturation,
+                    cli.vibrance,
                     cli.quality,
                     cli.gainmap_quality,
                     cli.save_gainmap,

@@ -183,6 +183,24 @@ class TestUltraHDRStudio(unittest.TestCase):
 
         self.assertGreaterEqual(max_contrast, max_neutral)
 
+    def test_vibrance_saturation_parameter(self):
+        from core.ultrahdr_engine import apply_vibrance_saturation, compute_hdr_and_gain_map
+        test_img = np.array([[[120, 120, 120], [200, 150, 120], [255, 0, 0]]], dtype=np.uint8)
+        
+        sat_boost = apply_vibrance_saturation(test_img, saturation=0.5, vibrance=0.0)
+        self.assertEqual(sat_boost[0, 0, 0], 120)
+        self.assertGreaterEqual(sat_boost[0, 1, 0], test_img[0, 1, 0])
+
+        vib_boost = apply_vibrance_saturation(test_img, saturation=0.0, vibrance=0.5)
+        self.assertEqual(vib_boost[0, 0, 0], 120)
+        self.assertEqual(vib_boost[0, 2, 0], 255)
+
+        # Integration with compute_hdr_and_gain_map
+        sdr_base = np.full((40, 40, 3), 180, dtype=np.uint8)
+        hdr, gm, gmin, gmax = compute_hdr_and_gain_map(sdr_base, saturation=0.2, vibrance=0.3)
+        self.assertEqual(hdr.shape, (40, 40, 3))
+        self.assertEqual(gm.shape, (40, 40))
+
 
 if __name__ == "__main__":
     unittest.main()

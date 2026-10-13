@@ -38,6 +38,37 @@ def linear_to_srgb(x: np.ndarray) -> np.ndarray:
     return np.where(x <= 0.0031308, x * 12.92, 1.055 * (x ** (1.0 / 2.4)) - 0.055).astype(np.float32)
 
 
+def apply_vibrance_saturation(
+    sdr_uint8: np.ndarray,
+    saturation: float = 0.0,
+    vibrance: float = 0.0,
+) -> np.ndarray:
+    """Ajuste la vibrance et la saturation d'une image SDR uint8 RGB."""
+    if saturation == 0.0 and vibrance == 0.0:
+        return sdr_uint8
+
+    rgb = sdr_uint8.astype(np.float32) / 255.0
+    r = rgb[:, :, 0]
+    g = rgb[:, :, 1]
+    b = rgb[:, :, 2]
+
+    # Luminance standard
+    L = r * 0.2126 + g * 0.7152 + b * 0.0722
+
+    max_c = np.maximum(r, np.maximum(g, b))
+    min_c = np.minimum(r, np.minimum(g, b))
+    sat = np.where(max_c > 1e-4, (max_c - min_c) / max_c, 0.0)
+
+    if vibrance > 0.0:
+        vib_mod = vibrance * (1.0 - sat) * 1.3
+    else:
+        vib_mod = vibrance * sat
+
+    total_mult = np.maximum(1.0 + saturation + vib_mod, 0.0)[:, :, None]
+    out_rgb = np.clip(L[:, :, None] + (rgb - L[:, :, None]) * total_mult, 0.0, 1.0)
+    return (out_rgb * 255.0 + 0.5).astype(np.uint8)
+
+
 # ── Moteur Unifié de Calcul HDR & Gain Map ────────────────────────────────────
 
 def compute_hdr_and_gain_map(
@@ -50,6 +81,8 @@ def compute_hdr_and_gain_map(
     hi_gamma: float = 1.0,
     highlight_threshold: float = 0.4,
     contrast: float = 0.0,
+    saturation: float = 0.0,
+    vibrance: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray, float, float]:
     """Calcule l'image HDR (en nits) et la Gain Map (log2) associée à l'image de base SDR.
 
@@ -62,6 +95,8 @@ def compute_hdr_and_gain_map(
 
     # 1. Normalisation stricte en forme (H, W, 3)
     sdr_uint8 = normalize_image_array(sdr_uint8)
+    if saturation != 0.0 or vibrance != 0.0:
+        sdr_uint8 = apply_vibrance_saturation(sdr_uint8, saturation=saturation, vibrance=vibrance)
     if hdr_lin_input is not None:
         hdr_lin_input = normalize_image_array(hdr_lin_input)
         if hdr_lin_input.shape[:2] != sdr_uint8.shape[:2]:

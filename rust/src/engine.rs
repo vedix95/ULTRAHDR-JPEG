@@ -41,6 +41,8 @@ pub struct TonalParams {
     pub highlights: f32, // -1.0 .. +1.0 (défaut 0.0)
     pub shadows: f32,    // -1.0 .. +1.0 (défaut 0.0)
     pub blacks: f32,     // -1.0 .. +1.0 (défaut 0.0)
+    pub saturation: f32, // -1.0 .. +1.0 (défaut 0.0)
+    pub vibrance: f32,   // -1.0 .. +1.0 (défaut 0.0)
 }
 
 impl Default for TonalParams {
@@ -51,6 +53,8 @@ impl Default for TonalParams {
             highlights: 0.0,
             shadows: 0.0,
             blacks: 0.0,
+            saturation: 0.0,
+            vibrance: 0.0,
         }
     }
 }
@@ -76,6 +80,7 @@ impl TonalZone {
         }
     }
 
+    #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
             TonalZone::Blacks => "Noirs (Blacks)",
@@ -99,9 +104,13 @@ impl TonalZone {
 pub struct LuminanceHistogram {
     pub bins: [u32; 256],
     pub max_count: u32,
+    #[allow(dead_code)]
     pub black_pct: f32,
+    #[allow(dead_code)]
     pub shadow_pct: f32,
+    #[allow(dead_code)]
     pub highlight_pct: f32,
+    #[allow(dead_code)]
     pub white_pct: f32,
 }
 
@@ -204,6 +213,48 @@ pub struct HdrGainMapResult {
     pub gain_log2: Vec<f32>,  // (width * height)
     pub gain_min: f32,
     pub gain_max: f32,
+    pub sdr_processed: Option<Vec<u8>>,
+}
+
+/// Modifie la saturation et la vibrance d'un tampon SDR RGB uint8 de manière ultra-rapide et multithreadée.
+/// - Saturation : ajuste proportionnellement l'intensité chromatique globale (-100% à +100%).
+/// - Vibrance : protège les tons chair et les couleurs déjà saturées tout en rehaussant les teintes douces (-100% à +100%).
+pub fn apply_vibrance_saturation(sdr_uint8: &[u8], saturation: f32, vibrance: f32) -> Vec<u8> {
+    if saturation == 0.0 && vibrance == 0.0 {
+        return sdr_uint8.to_vec();
+    }
+    let mut out = sdr_uint8.to_vec();
+    out.par_chunks_exact_mut(3).for_each(|pixel| {
+        let r = pixel[0] as f32 / 255.0;
+        let g = pixel[1] as f32 / 255.0;
+        let b = pixel[2] as f32 / 255.0;
+
+        let l = r * 0.2126 + g * 0.7152 + b * 0.0722;
+        let max_c = r.max(g).max(b);
+        let min_c = r.min(g).min(b);
+        let sat = if max_c > 1e-4 {
+            (max_c - min_c) / max_c
+        } else {
+            0.0
+        };
+
+        let vib_mod = if vibrance > 0.0 {
+            vibrance * (1.0 - sat) * 1.3
+        } else {
+            vibrance * sat
+        };
+
+        let total_mult = (1.0 + saturation + vib_mod).max(0.0);
+
+        let r_out = (l + (r - l) * total_mult).clamp(0.0, 1.0);
+        let g_out = (l + (g - l) * total_mult).clamp(0.0, 1.0);
+        let b_out = (l + (b - l) * total_mult).clamp(0.0, 1.0);
+
+        pixel[0] = (r_out * 255.0 + 0.5) as u8;
+        pixel[1] = (g_out * 255.0 + 0.5) as u8;
+        pixel[2] = (b_out * 255.0 + 0.5) as u8;
+    });
+    out
 }
 
 /// Calcule l'image HDR (en nits) et la Gain Map (log2) associée à l'image SDR avec contrôle Tonal Pro et Anti-Halo.
@@ -224,6 +275,16 @@ pub fn compute_hdr_and_gain_map(
     let n_pixels = (width * height) as usize;
     let base_peak_boost = (peak_nits / sdr_white).max(1.05);
 
+    let processed_sdr = if tonal.saturation != 0.0 || tonal.vibrance != 0.0 {
+        Some(apply_vibrance_saturation(sdr_uint8, tonal.saturation, tonal.vibrance))
+    } else {
+        None
+    };
+    let sdr_source: &[u8] = match &processed_sdr {
+        Some(s) => s.as_slice(),
+        None => sdr_uint8,
+    };
+
     // Modulation Tonal Pro (Style Lightroom / Photoshop) :
     // 1. Blancs (Whites) : module directement le pic de boost
     let effective_peak_boost = (base_peak_boost * (1.0 + tonal.whites * 0.45)).max(1.05);
@@ -238,9 +299,9 @@ pub fn compute_hdr_and_gain_map(
         let raw_lin = hdr_lin_input.unwrap();
         let mut headrooms = Vec::with_capacity(n_pixels);
         for i in 0..n_pixels {
-            let r_sdr = srgb_to_linear(sdr_uint8[i * 3] as f32 / 255.0);
-            let g_sdr = srgb_to_linear(sdr_uint8[i * 3 + 1] as f32 / 255.0);
-            let b_sdr = srgb_to_linear(sdr_uint8[i * 3 + 2] as f32 / 255.0);
+            let r_sdr = srgb_to_linear(sdr_source[i * 3] as f32 / 255.0);
+            let g_sdr = srgb_to_linear(sdr_source[i * 3 + 1] as f32 / 255.0);
+            let b_sdr = srgb_to_linear(sdr_source[i * 3 + 2] as f32 / 255.0);
             let l_sdr = (r_sdr * LUM_WEIGHTS[0] + g_sdr * LUM_WEIGHTS[1] + b_sdr * LUM_WEIGHTS[2]).clamp(0.0, 1.0);
 
             let r_raw = raw_lin[i * 3].max(0.0);
@@ -268,9 +329,9 @@ pub fn compute_hdr_and_gain_map(
             let start_pixel = chunk_idx * 1024;
             for (i, gain_val) in gain_chunk.iter_mut().enumerate() {
                 let pixel_idx = start_pixel + i;
-                let r_sdr = srgb_to_linear(sdr_uint8[pixel_idx * 3] as f32 / 255.0);
-                let g_sdr = srgb_to_linear(sdr_uint8[pixel_idx * 3 + 1] as f32 / 255.0);
-                let b_sdr = srgb_to_linear(sdr_uint8[pixel_idx * 3 + 2] as f32 / 255.0);
+                let r_sdr = srgb_to_linear(sdr_source[pixel_idx * 3] as f32 / 255.0);
+                let g_sdr = srgb_to_linear(sdr_source[pixel_idx * 3 + 1] as f32 / 255.0);
+                let b_sdr = srgb_to_linear(sdr_source[pixel_idx * 3 + 2] as f32 / 255.0);
                 let l_sdr = (r_sdr * LUM_WEIGHTS[0] + g_sdr * LUM_WEIGHTS[1] + b_sdr * LUM_WEIGHTS[2]).clamp(0.0, 1.0);
 
                 let t = ((l_sdr - thresh) / (1.0 - thresh).max(1e-4)).clamp(0.0, 1.0);
@@ -325,9 +386,9 @@ pub fn compute_hdr_and_gain_map(
                 let start_pixel = chunk_idx * 1024;
                 for (i, &g) in gain_chunk.iter().enumerate() {
                     let pixel_idx = start_pixel + i;
-                    let r_sdr = srgb_to_linear(sdr_uint8[pixel_idx * 3] as f32 / 255.0);
-                    let g_sdr = srgb_to_linear(sdr_uint8[pixel_idx * 3 + 1] as f32 / 255.0);
-                    let b_sdr = srgb_to_linear(sdr_uint8[pixel_idx * 3 + 2] as f32 / 255.0);
+                    let r_sdr = srgb_to_linear(sdr_source[pixel_idx * 3] as f32 / 255.0);
+                    let g_sdr = srgb_to_linear(sdr_source[pixel_idx * 3 + 1] as f32 / 255.0);
+                    let b_sdr = srgb_to_linear(sdr_source[pixel_idx * 3 + 2] as f32 / 255.0);
                     let boost = g.exp2();
                     hdr_chunk[i * 3] = r_sdr * sdr_white * boost;
                     hdr_chunk[i * 3 + 1] = g_sdr * sdr_white * boost;
@@ -355,6 +416,7 @@ pub fn compute_hdr_and_gain_map(
         gain_log2,
         gain_min,
         gain_max,
+        sdr_processed: processed_sdr,
     }
 }
 

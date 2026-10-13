@@ -41,6 +41,8 @@ pub struct ProcessingParams {
     pub tonal_highlights: f32, // -1.0 .. +1.0 (défaut 0.0)
     pub tonal_shadows: f32,    // -1.0 .. +1.0 (défaut 0.0)
     pub tonal_blacks: f32,     // -1.0 .. +1.0 (défaut 0.0)
+    pub tonal_saturation: f32, // -1.0 .. +1.0 (défaut 0.0)
+    pub tonal_vibrance: f32,   // -1.0 .. +1.0 (défaut 0.0)
     pub anti_halo: f32,        // 0.0 .. 1.0 (défaut 0.40)
 }
 
@@ -59,6 +61,8 @@ impl Default for ProcessingParams {
             tonal_highlights: 0.0,
             tonal_shadows: 0.0,
             tonal_blacks: 0.0,
+            tonal_saturation: 0.0,
+            tonal_vibrance: 0.0,
             anti_halo: 0.40,
         }
     }
@@ -130,6 +134,7 @@ pub struct UltraHdrApp {
     open_path_input: String,
     show_open_dialog: bool,
     sidebar_visible: bool,
+    compare_toggled: bool,
 }
 
 impl UltraHdrApp {
@@ -199,6 +204,7 @@ impl UltraHdrApp {
             open_path_input: String::new(),
             show_open_dialog: false,
             sidebar_visible: true,
+            compare_toggled: false,
         }
     }
 
@@ -220,13 +226,17 @@ impl UltraHdrApp {
                 self.params.highlight_threshold = rec.highlight_threshold;
                 self.params.ev_shift = 0.0;
                 self.params.tone_map_mode = "aces".to_string();
+                self.params.tonal_contrast = 0.0;
                 self.params.tonal_whites = 0.0;
                 self.params.tonal_highlights = 0.0;
                 self.params.tonal_shadows = 0.0;
                 self.params.tonal_blacks = 0.0;
+                self.params.tonal_saturation = 0.0;
+                self.params.tonal_vibrance = 0.0;
                 self.params.anti_halo = 0.40;
                 self.targeted_tool_active = false;
                 self.hovered_zone = None;
+                self.compare_toggled = false;
 
                 // ⚡ Génération du tampon de prévisualisation rapide (1280px max)
                 let preview = create_preview_buffer(&img, 1280);
@@ -284,6 +294,8 @@ impl UltraHdrApp {
             highlights: p.tonal_highlights,
             shadows: p.tonal_shadows,
             blacks: p.tonal_blacks,
+            saturation: p.tonal_saturation,
+            vibrance: p.tonal_vibrance,
         };
 
         // 1. Calcul Gain Map et HDR ultra-rapide sur la taille de prévisualisation
@@ -366,6 +378,8 @@ impl UltraHdrApp {
             highlights: p.tonal_highlights,
             shadows: p.tonal_shadows,
             blacks: p.tonal_blacks,
+            saturation: p.tonal_saturation,
+            vibrance: p.tonal_vibrance,
         };
 
         // Calcul sur la pleine résolution native de l'image
@@ -384,7 +398,8 @@ impl UltraHdrApp {
             p.anti_halo,
         );
 
-        let base_jpeg = match encode_rgb_jpeg(&img.sdr_uint8, w, h, self.base_quality) {
+        let sdr_to_encode = res.sdr_processed.as_deref().unwrap_or(&img.sdr_uint8);
+        let base_jpeg = match encode_rgb_jpeg(sdr_to_encode, w, h, self.base_quality) {
             Ok(b) => b,
             Err(e) => {
                 self.set_status(&format!("Erreur encodage base JPEG : {}", e), Color32::from_rgb(231, 76, 60));
@@ -482,6 +497,8 @@ impl UltraHdrApp {
                         highlights: p_copy.tonal_highlights,
                         shadows: p_copy.tonal_shadows,
                         blacks: p_copy.tonal_blacks,
+                        saturation: p_copy.tonal_saturation,
+                        vibrance: p_copy.tonal_vibrance,
                     };
                     let res = compute_hdr_and_gain_map(
                         &img.sdr_uint8,
@@ -497,8 +514,9 @@ impl UltraHdrApp {
                         tonal,
                         p_copy.anti_halo,
                     );
+                    let sdr_to_encode = res.sdr_processed.as_deref().unwrap_or(&img.sdr_uint8);
                     if let (Ok(base_jpg), Ok(gm_jpg)) = (
-                        encode_rgb_jpeg(&img.sdr_uint8, img.width, img.height, base_q),
+                        encode_rgb_jpeg(sdr_to_encode, img.width, img.height, base_q),
                         encode_gain_map_jpeg(&res.gain_log2, res.gain_min, res.gain_max, img.width, img.height, gm_q),
                     ) {
                         let uhdr = assemble_ultra_hdr_jpeg(
@@ -539,7 +557,8 @@ impl eframe::App for UltraHdrApp {
             let is_fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fs));
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+        // Touche M : cycle les modes d'affichage
+        if ctx.input(|i| i.key_pressed(egui::Key::M)) {
             self.mode = match self.mode {
                 ViewerMode::Split => ViewerMode::SideBySide,
                 ViewerMode::SideBySide => ViewerMode::FullHdr,
@@ -548,6 +567,10 @@ impl eframe::App for UltraHdrApp {
                 ViewerMode::Heatmap => ViewerMode::Split,
             };
             self.recompute_and_update_textures(ctx);
+        }
+        // Touche Backslash ou Slash : bascule le mode comparaison instantanée
+        if ctx.input(|i| i.key_pressed(egui::Key::Backslash) || i.key_pressed(egui::Key::Slash)) {
+            self.compare_toggled = !self.compare_toggled;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::T)) {
             self.targeted_tool_active = !self.targeted_tool_active;
@@ -560,6 +583,7 @@ impl eframe::App for UltraHdrApp {
                 self.targeted_tool_active = false;
                 self.hovered_zone = None;
             }
+            self.compare_toggled = false;
         }
 
         // Glisser-Déposer de fichier (Drag & Drop)
@@ -965,8 +989,17 @@ impl UltraHdrApp {
 
                 ui.add_space(8.0);
 
-                // Widget Histogramme 4 Zones
-                draw_tonal_histogram(ui, self.cached_histogram.as_ref(), self.hovered_zone.map(|(z, _)| z));
+                // Widget Histogramme 4 Zones & Courbe Tonale Interactive
+                let tonal_for_curve = TonalParams {
+                    contrast: self.params.tonal_contrast,
+                    whites: self.params.tonal_whites,
+                    highlights: self.params.tonal_highlights,
+                    shadows: self.params.tonal_shadows,
+                    blacks: self.params.tonal_blacks,
+                    saturation: self.params.tonal_saturation,
+                    vibrance: self.params.tonal_vibrance,
+                };
+                draw_tonal_histogram(ui, self.cached_histogram.as_ref(), self.hovered_zone.map(|(z, _)| z), &tonal_for_curve);
 
                 ui.add_space(10.0);
 
@@ -977,7 +1010,7 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_contrast * 100.0));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.tonal_contrast, -1.0..=1.0).step_by(0.01).show_value(false)).on_hover_text("Ajuste la dynamique et la pente de contraste entre ombres et hautes lumières.").changed() {
+                if ui.add(egui::Slider::new(&mut self.params.tonal_contrast, -1.0..=1.0).step_by(0.01).show_value(false)).on_hover_text("Ajuste la dynamique et la pente de contraste S-Curve entre ombres et hautes lumières.").changed() {
                     params_changed = true;
                 }
 
@@ -1043,6 +1076,32 @@ impl UltraHdrApp {
 
                 ui.add_space(8.0);
 
+                // 5. Vibrance HDR
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Vibrance HDR :").color(Color32::from_rgb(255, 170, 200)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_vibrance * 100.0));
+                    });
+                });
+                if ui.add(egui::Slider::new(&mut self.params.tonal_vibrance, -1.0..=1.0).step_by(0.01).show_value(false)).on_hover_text("Protège les tons chair et les couleurs déjà saturées tout en rehaussant les teintes douces.").changed() {
+                    params_changed = true;
+                }
+
+                ui.add_space(6.0);
+
+                // 6. Saturation HDR
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Saturation HDR :").color(Color32::from_rgb(255, 140, 160)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_saturation * 100.0));
+                    });
+                });
+                if ui.add(egui::Slider::new(&mut self.params.tonal_saturation, -1.0..=1.0).step_by(0.01).show_value(false)).on_hover_text("Ajuste l'intensité chromatique générale de l'image pour préserver l'éclat des couleurs dans les hautes lumières.").changed() {
+                    params_changed = true;
+                }
+
+                ui.add_space(8.0);
+
                 // Filtre Anti-Halo
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Filtre Anti-Halo (Gain Map) :").size(12.0).color(Color32::from_rgb(180, 190, 215)));
@@ -1056,9 +1115,9 @@ impl UltraHdrApp {
 
                 ui.add_space(8.0);
 
-                // Bouton réinitialiser tonalité
+                // Bouton réinitialiser tonalité & couleurs
                 let btn_reset_tonal = egui::Button::new(
-                    egui::RichText::new("↺ Réinitialiser la tonalité à 0").size(11.5).color(Color32::from_rgb(170, 180, 205)),
+                    egui::RichText::new("↺ Réinitialiser Tonalité & Couleur à 0").size(11.5).color(Color32::from_rgb(170, 180, 205)),
                 )
                 .fill(Color32::from_rgb(26, 29, 39))
                 .stroke(Stroke::new(1.0f32, Color32::from_rgb(45, 50, 70)))
@@ -1070,6 +1129,8 @@ impl UltraHdrApp {
                     self.params.tonal_highlights = 0.0;
                     self.params.tonal_shadows = 0.0;
                     self.params.tonal_blacks = 0.0;
+                    self.params.tonal_saturation = 0.0;
+                    self.params.tonal_vibrance = 0.0;
                     params_changed = true;
                 }
             }
@@ -1358,6 +1419,50 @@ impl UltraHdrApp {
                         self.recompute_and_update_textures(ctx);
                     }
 
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    // Bouton de comparaison instantanée
+                    let is_compare_active = self.compare_toggled
+                        || ctx.input(|i| {
+                            i.key_down(egui::Key::Space)
+                                || i.key_down(egui::Key::Backslash)
+                                || i.key_down(egui::Key::Slash)
+                        });
+
+                    let btn_compare = egui::Button::new(
+                        egui::RichText::new("👁 Original [Espace / \\]")
+                            .size(12.0)
+                            .color(if is_compare_active {
+                                Color32::BLACK
+                            } else {
+                                Color32::from_rgb(255, 215, 0)
+                            }),
+                    )
+                    .fill(if is_compare_active {
+                        Color32::from_rgb(255, 215, 0)
+                    } else {
+                        Color32::from_rgb(34, 30, 20)
+                    })
+                    .stroke(Stroke::new(
+                        1.0f32,
+                        if is_compare_active {
+                            Color32::WHITE
+                        } else {
+                            Color32::from_rgb(180, 150, 40)
+                        },
+                    ))
+                    .rounding(Rounding::same(6.0));
+
+                    if ui
+                        .add(btn_compare)
+                        .on_hover_text("Maintenez la touche Espace ou \\ (ou cliquez) pour afficher instantanément l'image SDR originale sans traitement.")
+                        .clicked()
+                    {
+                        self.compare_toggled = !self.compare_toggled;
+                    }
+
                     // Contrôles de Zoom
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button(egui::RichText::new("+").size(13.0)).clicked() {
@@ -1451,81 +1556,100 @@ impl UltraHdrApp {
         let center = rect.center() + self.pan;
         let img_rect = Rect::from_center_size(center, Vec2::new(draw_w, draw_h));
 
-        match self.mode {
-            ViewerMode::Split => {
-                if let (Some(tex_sdr), Some(tex_hdr)) = (&self.tex_original_sdr, &self.tex_hdr_preview) {
-                    let split_x = img_rect.left() + img_rect.width() * self.split_pos;
+        let is_comparing = self.compare_toggled
+            || ctx.input(|i| {
+                i.key_down(egui::Key::Space)
+                    || i.key_down(egui::Key::Backslash)
+                    || i.key_down(egui::Key::Slash)
+            });
 
-                    // Moitié gauche : SDR Original (AVANT)
-                    let left_clip = Rect::from_min_max(img_rect.min, Pos2::new(split_x, img_rect.max.y));
-                    let left_painter = painter.with_clip_rect(left_clip);
-                    left_painter.image(tex_sdr.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+        if is_comparing {
+            if let Some(tex_sdr) = &self.tex_original_sdr {
+                painter.image(tex_sdr.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                draw_floating_badge(
+                    &painter,
+                    Pos2::new(img_rect.left() + 16.0, img_rect.top() + 16.0),
+                    "👀 Mode Comparaison : Image SDR Originale [Espace / \\]",
+                    Color32::from_rgb(255, 215, 0),
+                );
+            }
+        } else {
+            match self.mode {
+                ViewerMode::Split => {
+                    if let (Some(tex_sdr), Some(tex_hdr)) = (&self.tex_original_sdr, &self.tex_hdr_preview) {
+                        let split_x = img_rect.left() + img_rect.width() * self.split_pos;
 
-                    // Moitié droite : Ultra HDR (APRÈS)
-                    let right_clip = Rect::from_min_max(Pos2::new(split_x, img_rect.min.y), img_rect.max);
-                    let right_painter = painter.with_clip_rect(right_clip);
-                    right_painter.image(tex_hdr.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                        // Moitié gauche : SDR Original (AVANT)
+                        let left_clip = Rect::from_min_max(img_rect.min, Pos2::new(split_x, img_rect.max.y));
+                        let left_painter = painter.with_clip_rect(left_clip);
+                        left_painter.image(tex_sdr.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
 
-                    // Ligne de séparation blanche
-                    painter.line_segment([Pos2::new(split_x, img_rect.top()), Pos2::new(split_x, img_rect.bottom())], Stroke::new(2.0f32, Color32::WHITE));
+                        // Moitié droite : Ultra HDR (APRÈS)
+                        let right_clip = Rect::from_min_max(Pos2::new(split_x, img_rect.min.y), img_rect.max);
+                        let right_painter = painter.with_clip_rect(right_clip);
+                        right_painter.image(tex_hdr.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
 
-                    // Poignée circulaire élégante avec flèches
-                    let handle_pos = Pos2::new(split_x, img_rect.center().y);
-                    painter.circle_filled(handle_pos, 14.0, Color32::from_rgb(0, 120, 212));
-                    painter.circle_stroke(handle_pos, 14.0, Stroke::new(2.5f32, Color32::WHITE));
-                    painter.text(handle_pos, egui::Align2::CENTER_CENTER, "◀▶", egui::FontId::proportional(10.0), Color32::WHITE);
+                        // Ligne de séparation blanche
+                        painter.line_segment([Pos2::new(split_x, img_rect.top()), Pos2::new(split_x, img_rect.bottom())], Stroke::new(2.0f32, Color32::WHITE));
 
-                    // Badges semi-transparents élégants
-                    draw_floating_badge(&painter, Pos2::new(img_rect.left() + 16.0, img_rect.top() + 16.0), "Avant : SDR Original", Color32::WHITE);
-                    draw_floating_badge(&painter, Pos2::new(img_rect.right() - 150.0, img_rect.top() + 16.0), "Après : Ultra HDR", Color32::from_rgb(0, 220, 255));
+                        // Poignée circulaire élégante avec flèches
+                        let handle_pos = Pos2::new(split_x, img_rect.center().y);
+                        painter.circle_filled(handle_pos, 14.0, Color32::from_rgb(0, 120, 212));
+                        painter.circle_stroke(handle_pos, 14.0, Stroke::new(2.5f32, Color32::WHITE));
+                        painter.text(handle_pos, egui::Align2::CENTER_CENTER, "◀▶", egui::FontId::proportional(10.0), Color32::WHITE);
 
-                    // Drag de la barre (désactivé si l'outil ciblé TAT est actif)
-                    if !self.targeted_tool_active && response.dragged_by(egui::PointerButton::Primary) {
-                        if let Some(pos) = response.interact_pointer_pos() {
-                            let pct = ((pos.x - img_rect.left()) / img_rect.width()).clamp(0.0, 1.0);
-                            self.split_pos = pct;
+                        // Badges semi-transparents élégants
+                        draw_floating_badge(&painter, Pos2::new(img_rect.left() + 16.0, img_rect.top() + 16.0), "Avant : SDR Original", Color32::WHITE);
+                        draw_floating_badge(&painter, Pos2::new(img_rect.right() - 150.0, img_rect.top() + 16.0), "Après : Ultra HDR", Color32::from_rgb(0, 220, 255));
+
+                        // Drag de la barre (désactivé si l'outil ciblé TAT est actif)
+                        if !self.targeted_tool_active && response.dragged_by(egui::PointerButton::Primary) {
+                            if let Some(pos) = response.interact_pointer_pos() {
+                                let pct = ((pos.x - img_rect.left()) / img_rect.width()).clamp(0.0, 1.0);
+                                self.split_pos = pct;
+                            }
                         }
                     }
                 }
-            }
-            ViewerMode::FullHdr => {
-                if let Some(tex) = &self.tex_hdr_preview {
-                    painter.image(tex.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-                    draw_floating_badge(&painter, Pos2::new(img_rect.left() + 16.0, img_rect.top() + 16.0), "Rendu Ultra HDR Direct", Color32::from_rgb(0, 220, 255));
+                ViewerMode::FullHdr => {
+                    if let Some(tex) = &self.tex_hdr_preview {
+                        painter.image(tex.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                        draw_floating_badge(&painter, Pos2::new(img_rect.left() + 16.0, img_rect.top() + 16.0), "Rendu Ultra HDR Direct", Color32::from_rgb(0, 220, 255));
+                    }
                 }
-            }
-            ViewerMode::GainMap => {
-                if let Some(tex) = &self.tex_gain_map {
-                    painter.image(tex.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-                    draw_floating_badge(&painter, Pos2::new(img_rect.left() + 16.0, img_rect.top() + 16.0), "Gain Map (Niveaux de Gris)", Color32::WHITE);
+                ViewerMode::GainMap => {
+                    if let Some(tex) = &self.tex_gain_map {
+                        painter.image(tex.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                        draw_floating_badge(&painter, Pos2::new(img_rect.left() + 16.0, img_rect.top() + 16.0), "Gain Map (Niveaux de Gris)", Color32::WHITE);
+                    }
                 }
-            }
-            ViewerMode::Heatmap => {
-                if let Some(tex) = &self.tex_heatmap {
-                    painter.image(tex.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-                    draw_floating_badge(&painter, Pos2::new(img_rect.left() + 16.0, img_rect.top() + 16.0), "Carte Thermique des Nits (Turbo)", Color32::from_rgb(255, 180, 50));
+                ViewerMode::Heatmap => {
+                    if let Some(tex) = &self.tex_heatmap {
+                        painter.image(tex.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                        draw_floating_badge(&painter, Pos2::new(img_rect.left() + 16.0, img_rect.top() + 16.0), "Carte Thermique des Nits (Turbo)", Color32::from_rgb(255, 180, 50));
+                    }
                 }
-            }
-            ViewerMode::SideBySide => {
-                if let (Some(tex_sdr), Some(tex_hdr)) = (&self.tex_original_sdr, &self.tex_hdr_preview) {
-                    let gap = 12.0;
-                    let total_w = rect.width() - gap;
-                    let single_w = (total_w * 0.49).min(rect.height() * aspect) * self.zoom;
-                    let single_h = single_w / aspect;
-                    let left_rect = Rect::from_center_size(
-                        Pos2::new(center.x - single_w * 0.5 - gap * 0.5, center.y),
-                        Vec2::new(single_w, single_h),
-                    );
-                    let right_rect = Rect::from_center_size(
-                        Pos2::new(center.x + single_w * 0.5 + gap * 0.5, center.y),
-                        Vec2::new(single_w, single_h),
-                    );
+                ViewerMode::SideBySide => {
+                    if let (Some(tex_sdr), Some(tex_hdr)) = (&self.tex_original_sdr, &self.tex_hdr_preview) {
+                        let gap = 12.0;
+                        let total_w = rect.width() - gap;
+                        let single_w = (total_w * 0.49).min(rect.height() * aspect) * self.zoom;
+                        let single_h = single_w / aspect;
+                        let left_rect = Rect::from_center_size(
+                            Pos2::new(center.x - single_w * 0.5 - gap * 0.5, center.y),
+                            Vec2::new(single_w, single_h),
+                        );
+                        let right_rect = Rect::from_center_size(
+                            Pos2::new(center.x + single_w * 0.5 + gap * 0.5, center.y),
+                            Vec2::new(single_w, single_h),
+                        );
 
-                    painter.image(tex_sdr.id(), left_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-                    painter.image(tex_hdr.id(), right_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                        painter.image(tex_sdr.id(), left_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                        painter.image(tex_hdr.id(), right_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
 
-                    draw_floating_badge(&painter, Pos2::new(left_rect.left() + 8.0, left_rect.top() + 8.0), "Avant : SDR Original", Color32::WHITE);
-                    draw_floating_badge(&painter, Pos2::new(right_rect.left() + 8.0, right_rect.top() + 8.0), "Après : Ultra HDR", Color32::from_rgb(0, 220, 255));
+                        draw_floating_badge(&painter, Pos2::new(left_rect.left() + 8.0, left_rect.top() + 8.0), "Avant : SDR Original", Color32::WHITE);
+                        draw_floating_badge(&painter, Pos2::new(right_rect.left() + 8.0, right_rect.top() + 8.0), "Après : Ultra HDR", Color32::from_rgb(0, 220, 255));
+                    }
                 }
             }
         }
@@ -1618,9 +1742,46 @@ impl UltraHdrApp {
 
 // ── Fonctions Utilitaires d'Affichage ──
 
-/// Affiche l'histogramme de luminance subdivisé en 4 zones avec mise en valeur de la zone active.
-fn draw_tonal_histogram(ui: &mut egui::Ui, hist: Option<&LuminanceHistogram>, active_zone: Option<TonalZone>) {
-    let desired_size = Vec2::new(ui.available_width(), 65.0);
+/// Évalue la fonction de transfert de tonalité Pro (Courbe S-Curve paramétrique Lightroom).
+pub fn eval_tone_curve(x: f32, t: &TonalParams) -> f32 {
+    let mut y = x;
+    // 1. Noirs (x < 0.25)
+    if t.blacks != 0.0 && x < 0.25 {
+        let w = (1.0 - x / 0.25).clamp(0.0, 1.0);
+        y += t.blacks * 0.18 * w * (1.0 - x);
+    }
+    // 2. Ombres (0.0 < x < 0.50)
+    if t.shadows != 0.0 && x < 0.50 {
+        let w = (1.0 - ((x - 0.25) / 0.25).abs()).max(0.0);
+        y += t.shadows * 0.20 * w * (1.0 - x);
+    }
+    // 3. Contraste Global S-Curve (pivot à 0.45)
+    if t.contrast != 0.0 {
+        let pivot = 0.45;
+        let s = (x - pivot) * t.contrast * 0.35;
+        y += s * (x * (1.0 - x) * 4.0);
+    }
+    // 4. Hautes Lumières (0.50 < x < 1.0)
+    if t.highlights != 0.0 && x > 0.50 {
+        let w = (1.0 - ((x - 0.70) / 0.25).abs()).max(0.0);
+        y += t.highlights * 0.20 * w * x;
+    }
+    // 5. Blancs (x > 0.75)
+    if t.whites != 0.0 && x > 0.75 {
+        let w = ((x - 0.75) / 0.25).clamp(0.0, 1.0);
+        y += t.whites * 0.22 * w * x;
+    }
+    y.clamp(0.0, 1.0)
+}
+
+/// Affiche l'histogramme de luminance subdivisé en 4 zones avec le tracé interactif de la Courbe Tonale (Tone Curve S-Curve).
+fn draw_tonal_histogram(
+    ui: &mut egui::Ui,
+    hist: Option<&LuminanceHistogram>,
+    active_zone: Option<TonalZone>,
+    tonal: &TonalParams,
+) {
+    let desired_size = Vec2::new(ui.available_width(), 82.0);
     let (rect, _response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
     let painter = ui.painter_at(rect);
 
@@ -1628,7 +1789,7 @@ fn draw_tonal_histogram(ui: &mut egui::Ui, hist: Option<&LuminanceHistogram>, ac
     painter.rect_stroke(rect, Rounding::same(6.0), Stroke::new(1.0f32, Color32::from_rgb(38, 42, 58)));
 
     let w = rect.width();
-    let h = rect.height() - 16.0;
+    let h = rect.height() - 18.0;
 
     let zones = [
         (TonalZone::Blacks, 0.0, 0.25, Color32::from_rgb(45, 55, 80), "Noirs"),
@@ -1661,7 +1822,7 @@ fn draw_tonal_histogram(ui: &mut egui::Ui, hist: Option<&LuminanceHistogram>, ac
             zone_col
         };
         painter.text(
-            Pos2::new((z_left + z_right) * 0.5, rect.top() + h + 8.0),
+            Pos2::new((z_left + z_right) * 0.5, rect.top() + h + 9.0),
             egui::Align2::CENTER_CENTER,
             label,
             egui::FontId::proportional(9.5),
@@ -1669,6 +1830,7 @@ fn draw_tonal_histogram(ui: &mut egui::Ui, hist: Option<&LuminanceHistogram>, ac
         );
     }
 
+    // 1. Histogramme de luminance en barres semi-transparentes
     if let Some(hist) = hist {
         let max_val = hist.max_count.max(1) as f32;
         let num_bins = 256;
@@ -1682,19 +1844,62 @@ fn draw_tonal_histogram(ui: &mut egui::Ui, hist: Option<&LuminanceHistogram>, ac
             let y_top = rect.top() + h - bar_h;
 
             let col = if i < 64 {
-                Color32::from_rgb(80, 110, 160)
+                Color32::from_rgba_premultiplied(70, 95, 140, 180)
             } else if i < 128 {
-                Color32::from_rgb(70, 160, 220)
+                Color32::from_rgba_premultiplied(60, 140, 190, 180)
             } else if i < 192 {
-                Color32::from_rgb(230, 180, 60)
+                Color32::from_rgba_premultiplied(200, 155, 50, 180)
             } else {
-                Color32::from_rgb(240, 240, 255)
+                Color32::from_rgba_premultiplied(210, 210, 230, 200)
             };
 
             painter.line_segment(
                 [Pos2::new(x, rect.top() + h), Pos2::new(x, y_top)],
                 Stroke::new(1.0f32, col),
             );
+        }
+    }
+
+    // 2. Tracé de la diagonale de référence (Ligne 45°)
+    painter.line_segment(
+        [Pos2::new(rect.left(), rect.top() + h), Pos2::new(rect.left() + w, rect.top())],
+        Stroke::new(1.0f32, Color32::from_rgba_premultiplied(100, 110, 140, 80)),
+    );
+
+    // 3. Tracé de la Courbe Tonale (Tone Curve S-Curve)
+    let n_pts = 64;
+    let mut curve_pts = Vec::with_capacity(n_pts);
+    for k in 0..n_pts {
+        let x_norm = k as f32 / (n_pts - 1) as f32;
+        let y_norm = eval_tone_curve(x_norm, tonal);
+        let px = rect.left() + x_norm * w;
+        let py = rect.top() + h - y_norm * h;
+        curve_pts.push(Pos2::new(px, py));
+    }
+    for i in 0..curve_pts.len() - 1 {
+        painter.line_segment(
+            [curve_pts[i], curve_pts[i + 1]],
+            Stroke::new(2.2f32, Color32::from_rgb(0, 225, 255)),
+        );
+    }
+
+    // 4. Points d'ancrage sur les centres des 4 zones Lightroom
+    let anchors = [
+        (0.125f32, TonalZone::Blacks),
+        (0.375f32, TonalZone::Shadows),
+        (0.625f32, TonalZone::Highlights),
+        (0.875f32, TonalZone::Whites),
+    ];
+    for &(ax, zone) in &anchors {
+        let ay = eval_tone_curve(ax, tonal);
+        let pt = Pos2::new(rect.left() + ax * w, rect.top() + h - ay * h);
+        let is_zone_active = active_zone == Some(zone);
+        if is_zone_active {
+            painter.circle_stroke(pt, 5.0, Stroke::new(1.5f32, Color32::WHITE));
+            painter.circle_filled(pt, 3.5, Color32::from_rgb(0, 220, 255));
+        } else {
+            painter.circle_filled(pt, 2.5, Color32::from_rgb(0, 180, 240));
+            painter.circle_stroke(pt, 2.5, Stroke::new(1.0f32, Color32::WHITE));
         }
     }
 }

@@ -140,3 +140,61 @@ fn test_contrast_modulation() {
 
     assert!(res_contrast.gain_max >= res_neutral.gain_max);
 }
+
+#[test]
+fn test_vibrance_saturation() {
+    let pixels = vec![
+        120u8, 120u8, 120u8, // Gris neutre (sat = 0)
+        200u8, 150u8, 120u8, // Teinte douce peu saturée
+        255u8, 0u8, 0u8,     // Rouge pur ultra saturé (sat = 1.0)
+    ];
+
+    // Saturation positive augmente la chromaticité de la teinte douce
+    let sat_boost = ultrahdr::engine::apply_vibrance_saturation(&pixels, 0.5, 0.0);
+    assert_eq!(sat_boost[0], 120); // Neutre reste neutre
+    assert!(sat_boost[3] >= pixels[3]); // R augmente
+    assert!(sat_boost[5] <= pixels[5]); // B diminue (écart plus grand = plus saturé)
+
+    // Vibrance positive booste la teinte douce sans saturer excessivement le rouge pur
+    let vib_boost = ultrahdr::engine::apply_vibrance_saturation(&pixels, 0.0, 0.5);
+    assert_eq!(vib_boost[0], 120); // Neutre inchangé
+    assert!(vib_boost[3] >= pixels[3]); // Douce rehaussée
+    assert_eq!(vib_boost[6], 255); // Rouge pur reste 255 (protégé)
+}
+
+#[test]
+fn test_tone_curve() {
+    let default_params = TonalParams::default();
+
+    // 1. Sans ajustement, la courbe est strictement la diagonale y = x
+    for k in 0..=10 {
+        let x = k as f32 / 10.0;
+        let y = ultrahdr::gui::eval_tone_curve(x, &default_params);
+        assert!((y - x).abs() < 1e-4);
+    }
+
+    // 2. Avec contraste positif, les hautes lumières montent et les ombres descendent
+    let contrast_params = TonalParams {
+        contrast: 0.5,
+        ..Default::default()
+    };
+    let y_high = ultrahdr::gui::eval_tone_curve(0.75, &contrast_params);
+    let y_low = ultrahdr::gui::eval_tone_curve(0.25, &contrast_params);
+    assert!(y_high > 0.75);
+    assert!(y_low < 0.25);
+
+    // 3. Toutes les sorties restent dans [0.0, 1.0]
+    let extreme_params = TonalParams {
+        contrast: 1.0,
+        whites: 1.0,
+        highlights: 1.0,
+        shadows: 1.0,
+        blacks: 1.0,
+        ..Default::default()
+    };
+    for k in 0..=20 {
+        let x = k as f32 / 20.0;
+        let y = ultrahdr::gui::eval_tone_curve(x, &extreme_params);
+        assert!((0.0..=1.0).contains(&y));
+    }
+}
