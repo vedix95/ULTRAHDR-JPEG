@@ -18,6 +18,7 @@ pub struct LoadedImage {
     pub filename: String,
     pub file_size_bytes: u64,
     pub dynamic_range_stops: f32,
+    pub exif_bytes: Option<Vec<u8>>,
 }
 
 pub fn load_image<P: AsRef<Path>>(path: P) -> Result<LoadedImage, String> {
@@ -40,7 +41,37 @@ pub fn load_image<P: AsRef<Path>>(path: P) -> Result<LoadedImage, String> {
     load_image_from_bytes(&bytes, &filename, file_size_bytes)
 }
 
+/// Extrait le marqueur APP1 EXIF d'origine d'un flux JPEG si présent.
+pub fn extract_exif_from_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 4 || bytes[0] != 0xff || bytes[1] != 0xd8 {
+        return None;
+    }
+    let mut offset = 2;
+    while offset + 4 <= bytes.len() {
+        if bytes[offset] != 0xff {
+            break;
+        }
+        let marker = bytes[offset + 1];
+        if marker == 0xd9 || marker == 0xda {
+            break;
+        }
+        let length = u16::from_be_bytes([bytes[offset + 2], bytes[offset + 3]]) as usize;
+        if offset + 2 + length > bytes.len() {
+            break;
+        }
+        if marker == 0xe1 {
+            let payload = &bytes[offset + 4..offset + 2 + length];
+            if payload.starts_with(b"Exif\0\0") {
+                return Some(bytes[offset..offset + 2 + length].to_vec());
+            }
+        }
+        offset += 2 + length;
+    }
+    None
+}
+
 pub fn load_image_from_bytes(bytes: &[u8], filename: &str, file_size_bytes: u64) -> Result<LoadedImage, String> {
+    let exif_bytes = extract_exif_from_jpeg(bytes);
     let mut reader = match ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format() {
         Ok(r) => r,
         Err(_) => ImageReader::new(std::io::Cursor::new(bytes)),
@@ -124,6 +155,7 @@ pub fn load_image_from_bytes(bytes: &[u8], filename: &str, file_size_bytes: u64)
                 filename: filename.to_string(),
                 file_size_bytes,
                 dynamic_range_stops: stops.clamp(8.0, 14.0),
+                exif_bytes: exif_bytes.clone(),
             })
         }
         DynamicImage::ImageRgba16(rgba16) => {
@@ -156,6 +188,7 @@ pub fn load_image_from_bytes(bytes: &[u8], filename: &str, file_size_bytes: u64)
                 filename: filename.to_string(),
                 file_size_bytes,
                 dynamic_range_stops: stops.clamp(8.0, 14.0),
+                exif_bytes: exif_bytes.clone(),
             })
         }
 
@@ -187,6 +220,7 @@ pub fn load_image_from_bytes(bytes: &[u8], filename: &str, file_size_bytes: u64)
                 filename: filename.to_string(),
                 file_size_bytes,
                 dynamic_range_stops: stops.clamp(6.0, 10.0),
+                exif_bytes,
             })
         }
     }
@@ -202,6 +236,7 @@ fn process_float_hdr(
     format_str: &str,
     filename: &str,
     file_size_bytes: u64,
+    exif_bytes: Option<Vec<u8>>,
 ) -> Result<LoadedImage, String> {
     let n_pixels = (width * height) as usize;
 
@@ -253,6 +288,7 @@ fn process_float_hdr(
         filename: filename.to_string(),
         file_size_bytes,
         dynamic_range_stops: stops.clamp(8.0, 20.0),
+        exif_bytes,
     })
 }
 

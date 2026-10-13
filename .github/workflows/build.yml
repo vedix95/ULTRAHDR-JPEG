@@ -1,0 +1,66 @@
+name: CI / CD Build & Multiplatform Release
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Windows Native (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Build UltraHDR Studio Release
+        run: |
+          cd rust
+          cargo build --release
+
+      - name: Upload Windows Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ultrahdr-windows-x64
+          path: rust/target/release/ultrahdr.exe
+
+  build-linux:
+    name: Linux Musl Static (x86_64-unknown-linux-musl)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install Rust toolchain with musl target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Build UltraHDR Linux Musl Release
+        run: |
+          cd rust
+          cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Upload Linux Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ultrahdr-linux-x64
+          path: rust/target/x86_64-unknown-linux-musl/release/ultrahdr

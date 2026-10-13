@@ -16,7 +16,10 @@ use clap::Parser;
 use rayon::prelude::*;
 
 use analyzer::{analyze_image_potential, get_preset_by_name};
-use engine::{assemble_ultra_hdr_jpeg, compute_hdr_and_gain_map, encode_gain_map_jpeg, encode_rgb_jpeg};
+use engine::{
+    assemble_ultra_hdr_jpeg, compute_hdr_and_gain_map, encode_gain_map_jpeg, encode_rgb_jpeg,
+    TonalParams,
+};
 use loader::load_image;
 
 #[derive(Parser, Debug)]
@@ -157,6 +160,8 @@ fn process_single_file(
         final_shadow,
         final_gamma,
         final_thresh,
+        TonalParams::default(),
+        0.40,
     );
 
     println!(
@@ -182,8 +187,16 @@ fn process_single_file(
         }
     };
 
-    // 4. Assemblage binaire Ultra HDR ISO 21496-1 / Google Ultra HDR
-    let uhdr_bytes = assemble_ultra_hdr_jpeg(&base_jpeg, &gm_jpeg, res.gain_min, res.gain_max, final_peak, sdr_white);
+    // 4. Assemblage binaire Ultra HDR ISO 21496-1 / Google Ultra HDR (avec préservation EXIF)
+    let uhdr_bytes = assemble_ultra_hdr_jpeg(
+        &base_jpeg,
+        &gm_jpeg,
+        res.gain_min,
+        res.gain_max,
+        final_peak,
+        sdr_white,
+        loaded.exif_bytes.as_deref(),
+    );
 
     // 5. Enregistrement fichier
     let out_path = if let Some(p) = output_path {

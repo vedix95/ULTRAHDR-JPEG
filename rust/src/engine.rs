@@ -34,6 +34,160 @@ pub fn percentile_mut(v: &mut [f32], p: f32) -> f32 {
     v[idx.min(v.len() - 1)]
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TonalParams {
+    pub whites: f32,     // -1.0 .. +1.0 (défaut 0.0)
+    pub highlights: f32, // -1.0 .. +1.0 (défaut 0.0)
+    pub shadows: f32,    // -1.0 .. +1.0 (défaut 0.0)
+    pub blacks: f32,     // -1.0 .. +1.0 (défaut 0.0)
+}
+
+impl Default for TonalParams {
+    fn default() -> Self {
+        Self {
+            whites: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            blacks: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TonalZone {
+    Blacks,
+    Shadows,
+    Highlights,
+    Whites,
+}
+
+impl TonalZone {
+    pub fn from_luminance_u8(lum: u8) -> Self {
+        if lum < 51 {
+            TonalZone::Blacks
+        } else if lum < 128 {
+            TonalZone::Shadows
+        } else if lum < 204 {
+            TonalZone::Highlights
+        } else {
+            TonalZone::Whites
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            TonalZone::Blacks => "Noirs (Blacks)",
+            TonalZone::Shadows => "Ombres (Shadows)",
+            TonalZone::Highlights => "Hautes Lumières (Highlights)",
+            TonalZone::Whites => "Blancs (Whites / HDR)",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LuminanceHistogram {
+    pub bins: [u32; 256],
+    pub max_count: u32,
+    pub black_pct: f32,
+    pub shadow_pct: f32,
+    pub highlight_pct: f32,
+    pub white_pct: f32,
+}
+
+/// Calcule l'histogramme de luminance en 256 bins avec répartition dans les 4 zones Lightroom.
+pub fn compute_luminance_histogram(sdr_uint8: &[u8]) -> LuminanceHistogram {
+    let mut bins = [0u32; 256];
+    let n_pixels = sdr_uint8.len() / 3;
+    if n_pixels == 0 {
+        return LuminanceHistogram {
+            bins,
+            max_count: 1,
+            black_pct: 0.0,
+            shadow_pct: 0.0,
+            highlight_pct: 0.0,
+            white_pct: 0.0,
+        };
+    }
+
+    let mut black_cnt = 0u32;
+    let mut shadow_cnt = 0u32;
+    let mut high_cnt = 0u32;
+    let mut white_cnt = 0u32;
+
+    for chunk in sdr_uint8.chunks_exact(3) {
+        let lum = (chunk[0] as f32 * LUM_WEIGHTS[0]
+            + chunk[1] as f32 * LUM_WEIGHTS[1]
+            + chunk[2] as f32 * LUM_WEIGHTS[2])
+            .round()
+            .clamp(0.0, 255.0) as usize;
+        bins[lum] += 1;
+
+        if lum < 51 {
+            black_cnt += 1;
+        } else if lum < 128 {
+            shadow_cnt += 1;
+        } else if lum < 204 {
+            high_cnt += 1;
+        } else {
+            white_cnt += 1;
+        }
+    }
+
+    let max_count = *bins.iter().max().unwrap_or(&1).max(&1);
+    let total = n_pixels as f32;
+
+    LuminanceHistogram {
+        bins,
+        max_count,
+        black_pct: (black_cnt as f32 / total) * 100.0,
+        shadow_pct: (shadow_cnt as f32 / total) * 100.0,
+        highlight_pct: (high_cnt as f32 / total) * 100.0,
+        white_pct: (white_cnt as f32 / total) * 100.0,
+    }
+}
+
+/// Lissage spatial 2D séparable pour éliminer les halos de Gain Map sur transitions contrastées.
+pub fn apply_anti_halo_filter(gain: &mut [f32], width: u32, height: u32, strength: f32) {
+    if strength <= 0.01 || width < 4 || height < 4 {
+        return;
+    }
+    let radius = ((width.min(height) as f32 * 0.012 * strength).round() as i32).clamp(1, 10);
+    let mut temp = gain.to_vec();
+    let w = width as usize;
+    let h = height as usize;
+
+    // Passe horizontale
+    temp.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        let orig_row = &gain[y * w..(y + 1) * w];
+        for x in 0..w {
+            let x_start = (x as i32 - radius).max(0) as usize;
+            let x_end = (x as i32 + radius).min(w as i32 - 1) as usize;
+            let mut sum = 0.0;
+            let count = (x_end - x_start + 1) as f32;
+            for ix in x_start..=x_end {
+                sum += orig_row[ix];
+            }
+            row[x] = sum / count;
+        }
+    });
+
+    // Passe verticale et fusion progressive
+    let alpha = (strength * 0.65).clamp(0.0, 0.80);
+    gain.par_chunks_mut(w).enumerate().for_each(|(y, out_row)| {
+        for x in 0..w {
+            let y_start = (y as i32 - radius).max(0) as usize;
+            let y_end = (y as i32 + radius).min(h as i32 - 1) as usize;
+            let mut sum = 0.0;
+            let count = (y_end - y_start + 1) as f32;
+            for iy in y_start..=y_end {
+                sum += temp[iy * w + x];
+            }
+            let blurred = sum / count;
+            out_row[x] = out_row[x] * (1.0 - alpha) + blurred * alpha;
+        }
+    });
+}
+
 pub struct HdrGainMapResult {
     pub hdr_nits: Vec<f32>,   // (width * height * 3)
     pub gain_log2: Vec<f32>,  // (width * height)
@@ -41,7 +195,7 @@ pub struct HdrGainMapResult {
     pub gain_max: f32,
 }
 
-/// Calcule l'image HDR (en nits) et la Gain Map (log2) associée à l'image SDR.
+/// Calcule l'image HDR (en nits) et la Gain Map (log2) associée à l'image SDR avec contrôle Tonal Pro et Anti-Halo.
 pub fn compute_hdr_and_gain_map(
     sdr_uint8: &[u8],
     hdr_lin_input: Option<&[f32]>,
@@ -53,11 +207,20 @@ pub fn compute_hdr_and_gain_map(
     shadow_boost: f32,
     hi_gamma: f32,
     highlight_threshold: f32,
+    tonal: TonalParams,
+    anti_halo_strength: f32,
 ) -> HdrGainMapResult {
     let n_pixels = (width * height) as usize;
-    let peak_boost = (peak_nits / sdr_white).max(1.05);
-    let thresh = highlight_threshold.clamp(0.01, 0.98);
-    let s_boost = shadow_boost.max(1.0);
+    let base_peak_boost = (peak_nits / sdr_white).max(1.05);
+
+    // Modulation Tonal Pro (Style Lightroom / Photoshop) :
+    // 1. Blancs (Whites) : module directement le pic de boost
+    let effective_peak_boost = (base_peak_boost * (1.0 + tonal.whites * 0.45)).max(1.05);
+    // 2. Hautes Lumières (Highlights) : module la progressivité du seuil et du gamma
+    let thresh = (highlight_threshold - tonal.highlights * 0.22).clamp(0.01, 0.98);
+    let effective_gamma = (hi_gamma * (1.0 - tonal.highlights * 0.35)).clamp(0.2, 3.5);
+    // 3. Ombres (Shadows) : module l'élévation des pénombres
+    let effective_s_boost = (shadow_boost + tonal.shadows * 0.40).max(1.0);
 
     // Calcul de p99_headroom si native_hdr
     let (use_raw_mod, p99_headroom) = if is_native_hdr && hdr_lin_input.is_some() {
@@ -110,12 +273,20 @@ pub fn compute_hdr_and_gain_map(
                     let l_raw = (r_raw * LUM_WEIGHTS[0] + g_raw * LUM_WEIGHTS[1] + b_raw * LUM_WEIGHTS[2]).max(0.0);
                     let raw_headroom = (l_raw - l_sdr).max(0.0);
                     let raw_mod = (raw_headroom / p99_headroom).clamp(0.0, 1.0);
-                    (w_high * (0.6 * w_high + 0.4 * raw_mod)).powf(hi_gamma)
+                    (w_high * (0.6 * w_high + 0.4 * raw_mod)).powf(effective_gamma)
                 } else {
-                    w_high.powf(hi_gamma)
+                    w_high.powf(effective_gamma)
                 };
 
-                let boost = (s_boost + (peak_boost - s_boost) * highlight_weight).clamp(1.0, peak_boost);
+                let mut boost = (effective_s_boost + (effective_peak_boost - effective_s_boost) * highlight_weight)
+                    .clamp(1.0, effective_peak_boost);
+
+                // 4. Noirs (Blacks) : modulation du contraste dans les basses lumières (l_sdr < 0.25)
+                if tonal.blacks != 0.0 && l_sdr < 0.25 {
+                    let black_weight = (1.0 - l_sdr / 0.25).clamp(0.0, 1.0);
+                    let black_mod = 1.0 + tonal.blacks * 0.35 * black_weight;
+                    boost = (boost * black_mod).max(1.0);
+                }
 
                 hdr_chunk[i * 3] = r_sdr * sdr_white * boost;
                 hdr_chunk[i * 3 + 1] = g_sdr * sdr_white * boost;
@@ -124,6 +295,29 @@ pub fn compute_hdr_and_gain_map(
                 *gain_val = boost.log2().max(0.0);
             }
         });
+
+    // 5. Filtrage spatial Anti-Halo bilatéral sur la Gain Map si activé
+    if anti_halo_strength > 0.01 {
+        apply_anti_halo_filter(&mut gain_log2, width, height, anti_halo_strength);
+        // Réactualisation de hdr_nits avec la Gain Map adoucie
+        hdr_nits
+            .par_chunks_mut(1024 * 3)
+            .zip(gain_log2.par_chunks(1024))
+            .enumerate()
+            .for_each(|(chunk_idx, (hdr_chunk, gain_chunk))| {
+                let start_pixel = chunk_idx * 1024;
+                for (i, &g) in gain_chunk.iter().enumerate() {
+                    let pixel_idx = start_pixel + i;
+                    let r_sdr = srgb_to_linear(sdr_uint8[pixel_idx * 3] as f32 / 255.0);
+                    let g_sdr = srgb_to_linear(sdr_uint8[pixel_idx * 3 + 1] as f32 / 255.0);
+                    let b_sdr = srgb_to_linear(sdr_uint8[pixel_idx * 3 + 2] as f32 / 255.0);
+                    let boost = g.exp2();
+                    hdr_chunk[i * 3] = r_sdr * sdr_white * boost;
+                    hdr_chunk[i * 3 + 1] = g_sdr * sdr_white * boost;
+                    hdr_chunk[i * 3 + 2] = b_sdr * sdr_white * boost;
+                }
+            });
+    }
 
     let mut gain_min = f32::MAX;
     let mut gain_max = f32::MIN;
@@ -136,7 +330,7 @@ pub fn compute_hdr_and_gain_map(
         }
     }
     if gain_max < 0.05 {
-        gain_max = peak_boost.log2();
+        gain_max = effective_peak_boost.log2();
     }
 
     HdrGainMapResult {
@@ -276,7 +470,7 @@ pub fn build_mpf_app2(primary_size: u32, gainmap_size: u32, gainmap_offset: u32)
     out
 }
 
-/// Assemble le conteneur JPEG Ultra HDR complet (ISO 21496-1 / Google Ultra HDR).
+/// Assemble le conteneur JPEG Ultra HDR complet (ISO 21496-1 / Google Ultra HDR) avec préservation EXIF.
 pub fn assemble_ultra_hdr_jpeg(
     base_jpeg: &[u8],
     gainmap_raw_jpeg: &[u8],
@@ -284,6 +478,7 @@ pub fn assemble_ultra_hdr_jpeg(
     gain_max: f32,
     peak_nits: f32,
     sdr_white: f32,
+    exif_segment: Option<&[u8]>,
 ) -> Vec<u8> {
     let hdr_capacity = (peak_nits / sdr_white).max(1.01).log2();
     let xmp_app1 = build_xmp_hdrgm(gain_min, gain_max, hdr_capacity);
@@ -294,17 +489,21 @@ pub fn assemble_ultra_hdr_jpeg(
     gainmap_jpeg.extend_from_slice(&xmp_app1);
     gainmap_jpeg.extend_from_slice(&gainmap_raw_jpeg[2..]);
 
+    let e = exif_segment.map(|s| s.len()).unwrap_or(0);
     let a = xmp_app1.len();
     let b = base_jpeg.len();
     let g = gainmap_jpeg.len();
 
-    let primary_size = (a + b + 90) as u32;
-    let gainmap_offset = (b + 80) as u32;
+    let primary_size = (e + a + b + 90) as u32;
+    let gainmap_offset = (e + b + 80) as u32;
 
     let mpf_app2 = build_mpf_app2(primary_size, g as u32, gainmap_offset);
 
-    let mut final_jpeg = Vec::with_capacity(2 + a + mpf_app2.len() + b - 2 + g);
+    let mut final_jpeg = Vec::with_capacity(2 + e + a + mpf_app2.len() + b - 2 + g);
     final_jpeg.extend_from_slice(&[0xff, 0xd8]);
+    if let Some(exif) = exif_segment {
+        final_jpeg.extend_from_slice(exif);
+    }
     final_jpeg.extend_from_slice(&xmp_app1);
     final_jpeg.extend_from_slice(&mpf_app2);
     final_jpeg.extend_from_slice(&base_jpeg[2..]);
