@@ -24,7 +24,7 @@ use loader::load_image;
 
 #[derive(Parser, Debug)]
 #[command(name = "ultrahdr")]
-#[command(version = "1.0.0")]
+#[command(version = "1.0.1")]
 #[command(about = "UltraHDR Studio — Éditeur et Générateur Ultra HDR / ISO 21496-1 en Rust pur")]
 struct Cli {
     /// Fichier image ou dossier d'images (si omis, ouvre l'interface graphique native)
@@ -258,6 +258,18 @@ fn process_single_file(
 }
 
 fn main() {
+    // 🐧 Forcer le backend Wayland sous Linux pour garantir la compatibilité HDR et le protocole couleur
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WINIT_UNIX_BACKEND").is_none() {
+            if std::env::var_os("WAYLAND_DISPLAY").is_some()
+                || std::env::var("XDG_SESSION_TYPE").map(|v| v == "wayland").unwrap_or(false)
+            {
+                std::env::set_var("WINIT_UNIX_BACKEND", "wayland");
+            }
+        }
+    }
+
     let cli = Cli::parse();
 
     // Déterminer s'il faut lancer l'interface graphique native

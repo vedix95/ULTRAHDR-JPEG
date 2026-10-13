@@ -183,13 +183,13 @@ fn test_tone_curve() {
     assert!(y_high > 0.75);
     assert!(y_low < 0.25);
 
-    // 3. Toutes les sorties restent dans [0.0, 1.0]
+    // 3. Toutes les sorties restent dans [0.0, 1.0] même avec des valeurs extrêmes étendues (-2.0 à +2.0)
     let extreme_params = TonalParams {
-        contrast: 1.0,
-        whites: 1.0,
-        highlights: 1.0,
-        shadows: 1.0,
-        blacks: 1.0,
+        contrast: 2.0,
+        whites: 2.0,
+        highlights: 2.0,
+        shadows: 2.0,
+        blacks: 2.0,
         ..Default::default()
     };
     for k in 0..=20 {
@@ -198,3 +198,41 @@ fn test_tone_curve() {
         assert!((0.0..=1.0).contains(&y));
     }
 }
+
+#[test]
+fn test_vivid_tone_mapping_and_slider_ranges() {
+    let w = 40;
+    let h = 40;
+    let mut sdr_u8 = vec![120u8; (w * h * 3) as usize];
+    for i in 0..(w * h / 2) as usize {
+        sdr_u8[i * 3] = 230;
+        sdr_u8[i * 3 + 1] = 230;
+        sdr_u8[i * 3 + 2] = 230;
+    }
+
+    // Test avec valeurs étendues maximales (-2.0 et +2.0)
+    let res_max = compute_hdr_and_gain_map(
+        &sdr_u8, None, false, w, h, 2000.0, 203.0, 1.2, 1.0, 0.4,
+        TonalParams {
+            contrast: 1.5,
+            whites: 1.5,
+            highlights: 1.5,
+            shadows: 1.5,
+            blacks: -1.5,
+            saturation: 1.5,
+            vibrance: 1.5,
+        },
+        0.2,
+    );
+
+    assert!(res_max.gain_max > 0.5);
+
+    // Test du mode de simulation "vivid" (Éclat Ultra HDR)
+    let sim_vivid = simulate_hdr_on_sdr(&res_max.hdr_nits, w, h, 203.0, 0.0, "vivid");
+    assert_eq!(sim_vivid.len(), (w * h * 3) as usize);
+
+    // Les pixels SDR de base (120) ne doivent pas être assombris
+    let sample_sdr = sim_vivid[(w * h - 1) as usize * 3];
+    assert!(sample_sdr >= 110);
+}
+

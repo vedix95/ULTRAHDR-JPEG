@@ -285,14 +285,14 @@ pub fn compute_hdr_and_gain_map(
         None => sdr_uint8,
     };
 
-    // Modulation Tonal Pro (Style Lightroom / Photoshop) :
-    // 1. Blancs (Whites) : module directement le pic de boost
-    let effective_peak_boost = (base_peak_boost * (1.0 + tonal.whites * 0.45)).max(1.05);
+    // Modulation Tonal Pro (Style Lightroom / Photoshop) amplifiée et responsive :
+    // 1. Blancs (Whites) : module directement le pic de boost (jusqu'à x2.7 à +200%)
+    let effective_peak_boost = (base_peak_boost * (1.0 + tonal.whites * 0.85)).max(1.02);
     // 2. Hautes Lumières (Highlights) : module la progressivité du seuil et du gamma
-    let thresh = (highlight_threshold - tonal.highlights * 0.22).clamp(0.01, 0.98);
-    let effective_gamma = (hi_gamma * (1.0 - tonal.highlights * 0.35)).clamp(0.2, 3.5);
-    // 3. Ombres (Shadows) : module l'élévation des pénombres
-    let effective_s_boost = (shadow_boost + tonal.shadows * 0.40).max(1.0);
+    let thresh = (highlight_threshold - tonal.highlights * 0.35).clamp(0.01, 0.98);
+    let effective_gamma = (hi_gamma * (1.0 - tonal.highlights * 0.45)).clamp(0.1, 4.5);
+    // 3. Ombres (Shadows) : module l'élévation ou la densification des pénombres
+    let effective_s_boost = (shadow_boost + tonal.shadows * 0.85).max(0.4);
 
     // Calcul de p99_headroom si native_hdr
     let (use_raw_mod, p99_headroom) = if is_native_hdr && hdr_lin_input.is_some() {
@@ -351,19 +351,19 @@ pub fn compute_hdr_and_gain_map(
                 };
 
                 let mut boost = (effective_s_boost + (effective_peak_boost - effective_s_boost) * highlight_weight)
-                    .clamp(1.0, effective_peak_boost);
+                    .clamp(0.3, effective_peak_boost);
 
-                // 4. Noirs (Blacks) : modulation du contraste dans les basses lumières (l_sdr < 0.25)
-                if tonal.blacks != 0.0 && l_sdr < 0.25 {
-                    let black_weight = (1.0 - l_sdr / 0.25).clamp(0.0, 1.0);
-                    let black_mod = 1.0 + tonal.blacks * 0.35 * black_weight;
-                    boost = (boost * black_mod).max(1.0);
+                // 4. Noirs (Blacks) : modulation du contraste dans les basses lumières (l_sdr < 0.30)
+                if tonal.blacks != 0.0 && l_sdr < 0.30 {
+                    let black_weight = (1.0 - l_sdr / 0.30).clamp(0.0, 1.0);
+                    let black_mod = (1.0 + tonal.blacks * 0.70 * black_weight).max(0.15);
+                    boost = (boost * black_mod).max(0.15);
                 }
 
                 // 5. Contraste Global S-Curve : modifie la transition dynamique autour du pivot moyen (0.45)
                 if tonal.contrast != 0.0 {
-                    let contrast_factor = 1.0 + (l_sdr - 0.45) * tonal.contrast * 0.45;
-                    boost = (boost * contrast_factor.max(0.4)).clamp(1.0, effective_peak_boost * 1.5);
+                    let contrast_factor = 1.0 + (l_sdr - 0.45) * tonal.contrast * 0.90;
+                    boost = (boost * contrast_factor.max(0.15)).clamp(0.15, effective_peak_boost * 3.0);
                 }
 
                 hdr_chunk[i * 3] = r_sdr * sdr_white * boost;
@@ -620,6 +620,19 @@ pub fn simulate_hdr_on_sdr(
                 for c in 0..3 {
                     let lin_exposed = nits_pixel[c] * exposure_scale;
                     let tm = match tone_map_mode {
+                        // Mode Éclat Ultra HDR : Fidélité 100% SDR sur les tons moyens/sombres (x <= 0.75),
+                        // et illumination dynamique progressive dans les hautes lumières HDR sans écrasement terne.
+                        "vivid" | "eclat" | "hdr_pop" => {
+                            let x = lin_exposed.max(0.0);
+                            let knee = 0.75f32;
+                            if x <= knee {
+                                x
+                            } else {
+                                let y = x - knee;
+                                let headroom = (white_point - knee).max(0.5);
+                                knee + (1.0 - knee) * (y / (y + headroom * 0.35))
+                            }
+                        }
                         // Mode Filmic ACES classique (conforme version Python originale)
                         "aces" | "filmic" => {
                             let x = lin_exposed.max(0.0);

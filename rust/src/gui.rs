@@ -42,7 +42,7 @@ pub struct ProcessingParams {
     pub tonal_shadows: f32,    // -1.0 .. +1.0 (défaut 0.0)
     pub tonal_blacks: f32,     // -1.0 .. +1.0 (défaut 0.0)
     pub tonal_saturation: f32, // -1.0 .. +1.0 (défaut 0.0)
-    pub tonal_vibrance: f32,   // -1.0 .. +1.0 (défaut 0.0)
+    pub tonal_vibrance: f32,   // -2.0 .. +2.0 (défaut 0.0)
     pub anti_halo: f32,        // 0.0 .. 1.0 (défaut 0.40)
 }
 
@@ -55,7 +55,7 @@ impl Default for ProcessingParams {
             hi_gamma: 1.0,
             highlight_threshold: 0.50,
             ev_shift: 0.0,
-            tone_map_mode: "aces".to_string(),
+            tone_map_mode: "vivid".to_string(),
             tonal_contrast: 0.0,
             tonal_whites: 0.0,
             tonal_highlights: 0.0,
@@ -225,7 +225,7 @@ impl UltraHdrApp {
                 self.params.hi_gamma = rec.hi_gamma;
                 self.params.highlight_threshold = rec.highlight_threshold;
                 self.params.ev_shift = 0.0;
-                self.params.tone_map_mode = "aces".to_string();
+                self.params.tone_map_mode = "vivid".to_string();
                 self.params.tonal_contrast = 0.0;
                 self.params.tonal_whites = 0.0;
                 self.params.tonal_highlights = 0.0;
@@ -601,36 +601,37 @@ impl eframe::App for UltraHdrApp {
             .frame(egui::Frame::none().fill(Color32::from_rgb(15, 16, 22)).inner_margin(egui::Margin::symmetric(14.0, 8.0)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    // Logo de marque
+                    // Logo de marque avec numéro de version officiel
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("✨").size(18.0));
                         ui.label(egui::RichText::new("Ultra").size(17.0).strong().color(Color32::WHITE));
                         ui.label(egui::RichText::new("HDR").size(17.0).strong().color(Color32::from_rgb(0, 200, 255)));
                         ui.label(egui::RichText::new("Studio").size(17.0).color(Color32::from_rgb(180, 190, 210)));
+                        draw_pill(ui, &format!("v{}", env!("CARGO_PKG_VERSION")), Color32::from_rgb(0, 110, 220), Color32::WHITE);
                     });
 
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(8.0);
 
-                    // Badge de statut matériel HDR interactif
+                    // Badge de statut matériel HDR physique interactif
                     let (dot_char, badge_text, badge_color) = if self.is_hdr_display_active {
-                        ("●", "Écran HDR Physique Actif (scRGB Float)", Color32::from_rgb(46, 204, 113))
+                        ("●", &self.display_info_str, Color32::from_rgb(46, 204, 113))
                     } else {
-                        ("○", "Écran SDR (Simulation Tone-Mapping)", Color32::from_rgb(52, 152, 219))
+                        ("○", &self.display_info_str, Color32::from_rgb(52, 152, 219))
                     };
 
                     let badge_btn = egui::Button::new(
                         egui::RichText::new(format!("{} {}", dot_char, badge_text)).size(11.5).color(badge_color),
                     )
-                    .fill(Color32::from_rgb(22, 25, 36))
-                    .stroke(Stroke::new(1.0f32, Color32::from_rgb(45, 50, 70)))
+                    .fill(Color32::from_rgb(20, 23, 34))
+                    .stroke(Stroke::new(1.0f32, Color32::from_rgb(45, 52, 75)))
                     .rounding(Rounding::same(12.0));
 
-                    if ui.add(badge_btn).on_hover_text(&self.display_info_str).clicked() {
+                    if ui.add(badge_btn).on_hover_text("Cliquez pour basculer entre rendu direct et simulation HDR").clicked() {
                         self.is_hdr_display_active = !self.is_hdr_display_active;
                         self.params.tone_map_mode = if self.is_hdr_display_active {
-                            "linear".to_string()
+                            "vivid".to_string()
                         } else {
                             "natural".to_string()
                         };
@@ -798,7 +799,10 @@ impl eframe::App for UltraHdrApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("Norme ISO 21496-1 • Adobe XMP (hdrgm) • CIPA DC-007 MPF").size(11.0).color(Color32::from_rgb(110, 115, 135)));
+                        ui.label(egui::RichText::new(format!(
+                            "UltraHDR Studio v{} • Norme ISO 21496-1 • Adobe XMP (hdrgm) • CIPA DC-007 MPF",
+                            env!("CARGO_PKG_VERSION")
+                        )).size(11.0).color(Color32::from_rgb(110, 115, 135)));
                     });
                 });
             });
@@ -1010,7 +1014,7 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_contrast * 100.0));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.tonal_contrast, -1.0..=1.0).step_by(0.01).show_value(false)).on_hover_text("Ajuste la dynamique et la pente de contraste S-Curve entre ombres et hautes lumières.").changed() {
+                if ui.add(egui::Slider::new(&mut self.params.tonal_contrast, -2.0..=2.0).step_by(0.01).show_value(false)).on_hover_text("Ajuste la dynamique et la pente de contraste S-Curve entre ombres et hautes lumières (-200% à +200%).").changed() {
                     params_changed = true;
                 }
 
@@ -1025,7 +1029,7 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_whites * 100.0));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.tonal_whites, -1.0..=1.0).step_by(0.01).show_value(false)).changed() {
+                if ui.add(egui::Slider::new(&mut self.params.tonal_whites, -2.0..=2.0).step_by(0.01).show_value(false)).changed() {
                     params_changed = true;
                 }
 
@@ -1040,7 +1044,7 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_highlights * 100.0));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.tonal_highlights, -1.0..=1.0).step_by(0.01).show_value(false)).changed() {
+                if ui.add(egui::Slider::new(&mut self.params.tonal_highlights, -2.0..=2.0).step_by(0.01).show_value(false)).changed() {
                     params_changed = true;
                 }
 
@@ -1055,7 +1059,7 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_shadows * 100.0));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.tonal_shadows, -1.0..=1.0).step_by(0.01).show_value(false)).changed() {
+                if ui.add(egui::Slider::new(&mut self.params.tonal_shadows, -2.0..=2.0).step_by(0.01).show_value(false)).changed() {
                     params_changed = true;
                 }
 
@@ -1070,7 +1074,7 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_blacks * 100.0));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.tonal_blacks, -1.0..=1.0).step_by(0.01).show_value(false)).changed() {
+                if ui.add(egui::Slider::new(&mut self.params.tonal_blacks, -2.0..=2.0).step_by(0.01).show_value(false)).changed() {
                     params_changed = true;
                 }
 
@@ -1083,7 +1087,7 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_vibrance * 100.0));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.tonal_vibrance, -1.0..=1.0).step_by(0.01).show_value(false)).on_hover_text("Protège les tons chair et les couleurs déjà saturées tout en rehaussant les teintes douces.").changed() {
+                if ui.add(egui::Slider::new(&mut self.params.tonal_vibrance, -2.0..=2.0).step_by(0.01).show_value(false)).on_hover_text("Protège les tons chair et les couleurs déjà saturées tout en rehaussant les teintes douces (-200% à +200%).").changed() {
                     params_changed = true;
                 }
 
@@ -1096,7 +1100,7 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_saturation * 100.0));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.tonal_saturation, -1.0..=1.0).step_by(0.01).show_value(false)).on_hover_text("Ajuste l'intensité chromatique générale de l'image pour préserver l'éclat des couleurs dans les hautes lumières.").changed() {
+                if ui.add(egui::Slider::new(&mut self.params.tonal_saturation, -2.0..=2.0).step_by(0.01).show_value(false)).on_hover_text("Ajuste l'intensité chromatique générale de l'image pour préserver l'éclat des couleurs dans les hautes lumières (-200% à +200%).").changed() {
                     params_changed = true;
                 }
 
@@ -1169,13 +1173,13 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:+.1} EV", self.params.ev_shift));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.ev_shift, -3.0..=3.0).step_by(0.1).show_value(false)).changed() {
+                if ui.add(egui::Slider::new(&mut self.params.ev_shift, -6.0..=6.0).step_by(0.1).show_value(false)).changed() {
                     params_changed = true;
                 }
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("-3 EV (Hautes Lumières)").size(10.0).color(Color32::GRAY));
+                    ui.label(egui::RichText::new("-6 EV (Hautes Lumières)").size(10.0).color(Color32::GRAY));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("+3 EV").size(10.0).color(Color32::GRAY));
+                        ui.label(egui::RichText::new("+6 EV (Ombres)").size(10.0).color(Color32::GRAY));
                     });
                 });
 
@@ -1183,10 +1187,11 @@ impl UltraHdrApp {
                 ui.label(egui::RichText::new("Moteur de Tone-Mapping :").size(12.0).color(Color32::from_rgb(160, 165, 180)));
 
                 let modes = [
-                    ("aces", "ACES Filmic (Cinématique & Équilibré)"),
-                    ("natural", "Naturel (SDR Préservé)"),
-                    ("reinhard", "Reinhard Étendu (Progressif)"),
-                    ("linear", "Directe (Observation Écrêtage)"),
+                    ("vivid", "✨ Éclat Ultra HDR (Dynamique & Vif — Recommandé)"),
+                    ("natural", "🌿 Naturel (SDR 1:1 Préservé)"),
+                    ("aces", "🎬 ACES Filmic (Cinématique)"),
+                    ("reinhard", "⚖ Reinhard Étendu (Progressif)"),
+                    ("linear", "⚡ Directe (Observation Écrêtage)"),
                 ];
 
                 for (mode_key, mode_title) in modes {
@@ -1234,13 +1239,13 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:.0} nits", self.params.peak_nits));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.peak_nits, 400.0..=4000.0).step_by(25.0).show_value(false)).changed() {
+                if ui.add(egui::Slider::new(&mut self.params.peak_nits, 200.0..=10000.0).step_by(50.0).show_value(false)).changed() {
                     params_changed = true;
                 }
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("400 nits").size(10.0).color(Color32::GRAY));
+                    ui.label(egui::RichText::new("200 nits").size(10.0).color(Color32::GRAY));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("4000 nits").size(10.0).color(Color32::GRAY));
+                        ui.label(egui::RichText::new("10 000 nits (Dolby Vision)").size(10.0).color(Color32::GRAY));
                     });
                 });
 
@@ -1253,7 +1258,7 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:.2}", self.params.hi_gamma));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.hi_gamma, 0.5..=2.2).step_by(0.05).show_value(false)).changed() {
+                if ui.add(egui::Slider::new(&mut self.params.hi_gamma, 0.10..=4.00).step_by(0.05).show_value(false)).changed() {
                     params_changed = true;
                 }
 
@@ -1266,7 +1271,7 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:.2}×", self.params.shadow_boost));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.shadow_boost, 1.0..=2.0).step_by(0.02).show_value(false)).changed() {
+                if ui.add(egui::Slider::new(&mut self.params.shadow_boost, 0.50..=4.00).step_by(0.02).show_value(false)).changed() {
                     params_changed = true;
                 }
 
@@ -1279,7 +1284,7 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:.2}", self.params.highlight_threshold));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.highlight_threshold, 0.0..=0.95).step_by(0.02).show_value(false)).changed() {
+                if ui.add(egui::Slider::new(&mut self.params.highlight_threshold, 0.00..=0.98).step_by(0.02).show_value(false)).changed() {
                     params_changed = true;
                 }
 
@@ -1713,16 +1718,16 @@ impl UltraHdrApp {
                             let delta = -dy * 0.008; // Glisser vers le haut = +, vers le bas = -
                             match zone {
                                 TonalZone::Blacks => {
-                                    self.params.tonal_blacks = (self.params.tonal_blacks + delta).clamp(-1.0, 1.0);
+                                    self.params.tonal_blacks = (self.params.tonal_blacks + delta).clamp(-2.0, 2.0);
                                 }
                                 TonalZone::Shadows => {
-                                    self.params.tonal_shadows = (self.params.tonal_shadows + delta).clamp(-1.0, 1.0);
+                                    self.params.tonal_shadows = (self.params.tonal_shadows + delta).clamp(-2.0, 2.0);
                                 }
                                 TonalZone::Highlights => {
-                                    self.params.tonal_highlights = (self.params.tonal_highlights + delta).clamp(-1.0, 1.0);
+                                    self.params.tonal_highlights = (self.params.tonal_highlights + delta).clamp(-2.0, 2.0);
                                 }
                                 TonalZone::Whites => {
-                                    self.params.tonal_whites = (self.params.tonal_whites + delta).clamp(-1.0, 1.0);
+                                    self.params.tonal_whites = (self.params.tonal_whites + delta).clamp(-2.0, 2.0);
                                 }
                             }
                             self.recompute_and_update_textures(ctx);
@@ -2019,27 +2024,179 @@ fn draw_floating_badge(painter: &egui::Painter, pos: Pos2, text: &str, text_col:
     painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(12.0), text_col);
 }
 
-/// Détecte les capacités HDR de l'écran (Windows DXGI / WDDM ou Linux Wayland).
+#[derive(Debug, Clone)]
+struct ParsedEdid {
+    model_name: String,
+    bits_per_channel: u8,
+    is_hdr: bool,
+    max_lum_nits: u32,
+    min_lum_nits: f32,
+    is_bt2020: bool,
+}
+
+/// Analyse les blocs EDID matériels bruts (CTA-861 / DisplayPort / HDMI) pour extraire les métadonnées HDR.
+fn parse_drm_edid(data: &[u8]) -> Option<ParsedEdid> {
+    if data.len() < 128 {
+        return None;
+    }
+    // 1. Nom du modèle depuis les descripteurs du bloc 0 (offsets 54, 72, 90, 108)
+    let mut model_name = String::new();
+    for offset in [54, 72, 90, 108] {
+        if offset + 18 <= data.len() {
+            let desc = &data[offset..offset + 18];
+            if desc[0] == 0 && desc[1] == 0 && desc[2] == 0 && (desc[3] == 0xfc || desc[3] == 0xfe) {
+                let s = String::from_utf8_lossy(&desc[5..18]);
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    model_name = trimmed.to_string();
+                    break;
+                }
+            }
+        }
+    }
+    if model_name.is_empty() {
+        model_name = "Écran Interne (eDP)".to_string();
+    }
+
+    // 2. Profondeur de couleur (Byte 20 bits 6-4)
+    let bpc_code = (data[20] >> 4) & 0x07;
+    let bits_per_channel = match bpc_code {
+        1 => 6,
+        2 => 8,
+        3 => 10,
+        4 => 12,
+        5 => 14,
+        6 => 16,
+        _ => 8,
+    };
+
+    // 3. Blocs d'extension CTA-861 (Bloc 1 et suivants)
+    let mut is_hdr = false;
+    let mut max_lum_nits = 0u32;
+    let mut min_lum_nits = 0.0f32;
+    let mut is_bt2020 = false;
+
+    let n_blocks = data.len() / 128;
+    for b in 1..n_blocks {
+        let ext = &data[b * 128..(b + 1) * 128];
+        if ext[0] == 0x02 { // Extension CTA-861
+            let dtd_offset = (ext[2] as usize).min(ext.len());
+            let mut pos = 4;
+            while pos < dtd_offset && pos < ext.len() {
+                let header = ext[pos];
+                let tag = header >> 5;
+                let length = (header & 0x1f) as usize;
+                pos += 1;
+                if tag == 7 && length >= 2 && pos + length <= ext.len() {
+                    let ext_tag = ext[pos];
+                    if ext_tag == 5 {
+                        // Colorimetry Data Block (BT.2020)
+                        if ext[pos + 1] & 0x80 != 0 {
+                            is_bt2020 = true;
+                        }
+                    } else if ext_tag == 6 {
+                        // HDR Static Metadata Data Block (ST2084 / HLG)
+                        let eotf = ext[pos + 1];
+                        if eotf & 0x04 != 0 || eotf & 0x08 != 0 {
+                            is_hdr = true;
+                        }
+                        if length >= 4 {
+                            let max_lum_byte = ext[pos + 3];
+                            if max_lum_byte > 0 {
+                                max_lum_nits = (50.0 * (2.0f32).powf(max_lum_byte as f32 / 32.0)).round() as u32;
+                            }
+                        }
+                        if length >= 6 {
+                            let min_lum_byte = ext[pos + 5];
+                            if min_lum_byte > 0 && max_lum_nits > 0 {
+                                min_lum_nits = (max_lum_nits as f32 * (min_lum_byte as f32 / 255.0).powi(2) / 100.0 * 1000.0).round() / 1000.0;
+                            }
+                        }
+                    }
+                }
+                pos += length;
+            }
+        }
+    }
+
+    Some(ParsedEdid {
+        model_name,
+        bits_per_channel,
+        is_hdr,
+        max_lum_nits,
+        min_lum_nits,
+        is_bt2020,
+    })
+}
+
+/// Détecte les capacités HDR physiques de l'écran (Windows DXGI / WDDM ou Linux DRM sysfs / Wayland).
 fn detect_hdr_display() -> (bool, String) {
     #[cfg(target_os = "windows")]
     {
         let is_hdr = false;
-        let info = "Windows: Détection pipeline scRGB linéaire (DXGI / Direct3D 12)".to_string();
+        let info = "Windows : Détection pipeline scRGB linéaire (DXGI / Direct3D 12)".to_string();
         (is_hdr, info)
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
-        if is_wayland {
+        let is_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var("XDG_SESSION_TYPE").map(|v| v == "wayland").unwrap_or(false);
+
+        // Parcours automatique des connecteurs GPU dans /sys/class/drm pour inspecter l'EDID physique
+        let mut detected_info = None;
+        if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let status_path = path.join("status");
+                if let Ok(status) = std::fs::read_to_string(&status_path) {
+                    if status.trim() == "connected" {
+                        let edid_path = path.join("edid");
+                        if let Ok(edid_bytes) = std::fs::read(&edid_path) {
+                            if let Some(parsed) = parse_drm_edid(&edid_bytes) {
+                                detected_info = Some(parsed);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(info) = detected_info {
+            let backend_str = if is_wayland { "Wayland natif forcé" } else { "X11" };
+            if info.is_hdr {
+                let min_str = if info.min_lum_nits > 0.0 {
+                    format!("{:.3} nits", info.min_lum_nits)
+                } else {
+                    "0.005 nits (Noir OLED pur)".to_string()
+                };
+                let gamut_str = if info.is_bt2020 { "BT.2020" } else { "DCI-P3" };
+                (
+                    true,
+                    format!(
+                        "Écran OLED HDR {} (Pic {} nits, Noir {}, {}-bit {}) • {}",
+                        info.model_name, info.max_lum_nits, min_str, info.bits_per_channel, gamut_str, backend_str
+                    ),
+                )
+            } else {
+                (
+                    false,
+                    format!(
+                        "Écran SDR {} ({}-bit) • Rendu avec simulation dynamique • {}",
+                        info.model_name, info.bits_per_channel, backend_str
+                    ),
+                )
+            }
+        } else if is_wayland {
             (
                 true,
-                "Linux (Wayland): Prise en charge native du protocole Color Management / Vulkan scRGB".to_string(),
+                "Linux (Wayland natif forcé) : Protocole Color Management / Vulkan scRGB actif".to_string(),
             )
         } else {
             (
                 false,
-                "Linux (X11): Rendu SDR avec simulation de tone-mapping actif".to_string(),
+                "Linux (X11) : Rendu SDR avec simulation de tone-mapping dynamique actif".to_string(),
             )
         }
     }
@@ -2047,11 +2204,23 @@ fn detect_hdr_display() -> (bool, String) {
 
 /// Lance l'application graphique native (Desktop en dur).
 pub fn run_native_gui(initial_file: Option<PathBuf>) -> Result<(), eframe::Error> {
+    // 🐧 Forcer le backend Wayland sous Linux pour garantir la compatibilité HDR et les fenêtres natives
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WINIT_UNIX_BACKEND").is_none() {
+            if std::env::var_os("WAYLAND_DISPLAY").is_some()
+                || std::env::var("XDG_SESSION_TYPE").map(|v| v == "wayland").unwrap_or(false)
+            {
+                std::env::set_var("WINIT_UNIX_BACKEND", "wayland");
+            }
+        }
+    }
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1400.0, 880.0])
-            .with_min_inner_size([1020.0, 680.0])
-            .with_title("UltraHDR Studio — Éditeur Photo vers JPEG Ultra HDR")
+            .with_inner_size([1420.0, 900.0])
+            .with_min_inner_size([1040.0, 700.0])
+            .with_title(format!("UltraHDR Studio v{} — Éditeur Photo vers JPEG Ultra HDR", env!("CARGO_PKG_VERSION")))
             .with_drag_and_drop(true),
         ..Default::default()
     };

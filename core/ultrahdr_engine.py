@@ -128,12 +128,12 @@ def compute_hdr_and_gain_map(
         highlight_weight = (w_high ** hi_gamma)
 
     # 4. Facteur de boost strictement monotone avec la luminance
-    s_boost = max(shadow_boost, 1.0)
+    s_boost = max(shadow_boost, 0.4)
     boost = s_boost + (peak_boost - s_boost) * highlight_weight
     if contrast != 0.0:
-        contrast_factor = 1.0 + (L_sdr - 0.45) * contrast * 0.45
-        boost = boost * np.maximum(contrast_factor, 0.4)
-    boost = np.clip(boost, 1.0, peak_boost * 1.5)
+        contrast_factor = 1.0 + (L_sdr - 0.45) * contrast * 0.90
+        boost = boost * np.maximum(contrast_factor, 0.15)
+    boost = np.clip(boost, 0.15, peak_boost * 3.0)
 
     # Image HDR en nits
     hdr_nits = (sdr_lin * sdr_white * boost[:, :, None]).astype(np.float32)
