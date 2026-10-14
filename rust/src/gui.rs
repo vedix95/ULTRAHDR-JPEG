@@ -388,21 +388,29 @@ impl UltraHdrApp {
 pub fn trigger_android_photo_picker() {
     let ctx = ndk_context::android_context();
     let vm_ptr = ctx.vm();
-    if vm_ptr.is_null() {
+    let activity_ptr = ctx.context();
+    if vm_ptr.is_null() || activity_ptr.is_null() {
         return;
     }
     unsafe {
         if let Ok(vm) = jni::JavaVM::from_raw(vm_ptr as *mut _) {
             if let Ok(mut env) = vm.attach_current_thread() {
-                if let Ok(class) = env.find_class("com/ultrahdr/studio/MainActivity") {
-                    let _ = env.call_static_method(class, "openImagePicker", "()V", &[]);
+                let activity_obj = jni::objects::JObject::from_raw(activity_ptr as *mut _);
+                if !activity_obj.as_raw().is_null() {
+                    if let Ok(_class) = env.get_object_class(&activity_obj) {
+                        let _ = env.call_method(&activity_obj, "openPicker", "()V", &[]);
+                    }
+                }
+                // Nettoyage immédiat de toute exception JNI pour empêcher l'arrêt de l'application
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_clear();
                 }
             }
         }
     }
 }
 
-    /// Déclenche l'ouverture de fichier selon la plateforme (rfd sur desktop, sélecteur photo Android + modal sur mobile).
+    /// Déclenche l'ouverture de fichier selon la plateforme (rfd sur desktop, sélecteur photo Android natif sur mobile).
     pub fn trigger_pick_file(&mut self, ctx: &egui::Context) {
         #[cfg(not(target_os = "android"))]
         {
@@ -416,7 +424,7 @@ pub fn trigger_android_photo_picker() {
         #[cfg(target_os = "android")]
         {
             Self::trigger_android_photo_picker();
-            self.show_open_dialog = true;
+            self.show_open_dialog = false;
         }
     }
 
@@ -795,6 +803,8 @@ impl eframe::App for UltraHdrApp {
             let cache_dirs = [
                 PathBuf::from("/data/data/com.ultrahdr.studio/cache"),
                 PathBuf::from("/data/user/0/com.ultrahdr.studio/cache"),
+                PathBuf::from("/storage/emulated/0/Android/data/com.ultrahdr.studio/cache"),
+                PathBuf::from("/sdcard/Android/data/com.ultrahdr.studio/cache"),
             ];
             for c_dir in &cache_dirs {
                 let flag = c_dir.join("photo_ready.flag");

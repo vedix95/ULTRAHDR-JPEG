@@ -46,10 +46,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Réception d'images partagées depuis une autre application (Galerie, Google Photos, etc.) -->
+            <intent-filter android:label="UltraHDR Studio">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+
             <!-- Permet d'ouvrir directement une image depuis la galerie ou un explorateur -->
-            <intent-filter>
+            <intent-filter android:label="UltraHDR Studio">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
