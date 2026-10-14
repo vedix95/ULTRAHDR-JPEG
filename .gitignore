@@ -57,3 +57,12 @@ desktop.ini
 .vscode/
 *.sublime-project
 *.sublime-workspace
+
+# ── Android build artifacts & local properties ──
+android/.gradle/
+android/**/build/
+android/app/src/main/jniLibs/
+android/local.properties
+android/gradle.properties
+*.apk
+scratch/

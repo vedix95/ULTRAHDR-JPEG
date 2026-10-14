@@ -6,57 +6,58 @@ echo   UltraHDR Studio - Generateur d'APK Android (Rust + Material 3)
 echo =====================================================================
 echo.
 
-REM 1. Verification de la toolchain Rust
-rustup target add aarch64-linux-android >nul 2>&1
+REM 1. Configuration automatique de la toolchain portable si presente
+if exist "C:\APPLIS\Java\jdk-17" (
+    set "JAVA_HOME=C:\APPLIS\Java\jdk-17"
+    set "PATH=C:\APPLIS\Java\jdk-17\bin;!PATH!"
+)
+if exist "C:\APPLIS\Android\sdk" (
+    set "ANDROID_HOME=C:\APPLIS\Android\sdk"
+    set "ANDROID_NDK_HOME=C:\APPLIS\Android\sdk\ndk\26.3.11579264"
+    set "NDK_HOME=C:\APPLIS\Android\sdk\ndk\26.3.11579264"
+    set "PATH=!NDK_HOME!\toolchains\llvm\prebuilt\windows-x86_64\bin;!PATH!"
+)
+
+REM 2. Compilation de la librairie native libultrahdr.so (ARM64)
+echo [*] Compilation de libultrahdr.so pour Android aarch64...
+cd rust
+cargo build --lib --target aarch64-linux-android --release
 if %ERRORLEVEL% NEQ 0 (
-    echo [!] Impossible d'ajouter la cible aarch64-linux-android via rustup.
-)
-
-REM 2. Verification d'Android SDK / NDK
-if "%ANDROID_HOME%"=="" (
-    if exist "%LOCALAPPDATA%\Android\Sdk" (
-        set "ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk"
-        echo [*] Android SDK detecte dans : !ANDROID_HOME!
-    ) else (
-        echo [!] AVERTISSEMENT : Variable ANDROID_HOME non definie.
-        echo     Veuillez definir ANDROID_HOME vers votre SDK Android.
-    )
-)
-
-REM 3. Construction via cargo-apk (Recommande)
-where cargo-apk >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-    echo [*] Lancement du build via cargo-apk...
-    cd rust
-    cargo apk build --release --lib
-    if %ERRORLEVEL% EQU 0 (
-        echo.
-        echo [OK] APK genere avec succes dans :
-        echo      rust\target\release\apk\ultrahdr-studio.apk
-        goto :success
-    )
+    echo [ERREUR] Echec de la compilation Cargo pour aarch64-linux-android.
     cd ..
+    exit /b 1
 )
+cd ..
 
-REM 4. Construction via Gradle + NDK si installe
-if exist "android\gradlew.bat" (
-    echo [*] Lancement de l'assemblage Gradle...
-    cd android
-    call gradlew.bat assembleRelease
+REM 3. Copie de libultrahdr.so vers android/app/src/main/jniLibs/arm64-v8a
+if not exist "android\app\src\main\jniLibs\arm64-v8a" (
+    mkdir "android\app\src\main\jniLibs\arm64-v8a"
+)
+copy /Y "rust\target\aarch64-linux-android\release\libultrahdr.so" "android\app\src\main\jniLibs\arm64-v8a\libultrahdr.so" >nul
+
+REM 4. Assemblage Gradle
+echo [*] Assemblage de l'APK Release via Gradle...
+cd android
+if exist "C:\APPLIS\Android\gradle-8.5\bin\gradle.bat" (
+    call "C:\APPLIS\Android\gradle-8.5\bin\gradle.bat" assembleRelease --no-daemon
+) else (
+    call gradle assembleRelease --no-daemon
+)
+if %ERRORLEVEL% NEQ 0 (
+    echo [ERREUR] Echec de l'assemblage Gradle.
     cd ..
-    goto :success
+    exit /b 1
+)
+cd ..
+
+REM 5. Copie finale de l'APK
+if exist "android\app\build\outputs\apk\release\app-release.apk" (
+    copy /Y "android\app\build\outputs\apk\release\app-release.apk" "ultrahdr-studio.apk" >nul
+    echo.
+    echo =====================================================================
+    echo   [SUCCES] APK Android genere avec succes :
+    echo   C:\APPLIS\devpython\UltraHDR\ultrahdr-studio.apk
+    echo =====================================================================
 )
 
-echo.
-echo =====================================================================
-echo [INFO] Pour compiler localement l'APK :
-echo   1. Installez cargo-apk : cargo install cargo-apk
-echo   2. Installez Android NDK et SDK
-echo   3. Relancez ce script !
-echo.
-echo NOTE : L'APK est egalement compile et publie automatiquement
-echo        par GitHub Actions sur chaque commit et release !
-echo =====================================================================
-
-:success
 endlocal
