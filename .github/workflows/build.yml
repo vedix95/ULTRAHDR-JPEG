@@ -1,4 +1,4 @@
-name: CI / CD Build & Multiplatform Release
+name: CI / CD Build & Multiplatform Release (Windows, Linux, Android)
 
 on:
   push:
@@ -40,7 +40,7 @@ jobs:
       - name: Build UltraHDR Linux Release
         run: |
           cd rust
-          cargo build --release
+          cargo build --release --bin ultrahdr
 
       - name: Upload Linux Binary
         uses: actions/upload-artifact@v4
@@ -71,7 +71,7 @@ jobs:
       - name: Build UltraHDR Studio Release
         run: |
           cd rust
-          cargo build --release
+          cargo build --release --bin ultrahdr
 
       - name: Upload Windows Binary
         uses: actions/upload-artifact@v4
@@ -79,9 +79,58 @@ jobs:
           name: ultrahdr-windows-x64
           path: rust/target/release/ultrahdr.exe
 
+  build-android:
+    name: Android Native APK (aarch64-linux-android)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26b
+
+      - name: Install Rust toolchain & Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-apk
+        run: cargo install cargo-apk
+
+      - name: Build Android Release APK
+        run: |
+          cd rust
+          cargo apk build --release
+
+      - name: Package & Verify APK
+        run: |
+          mkdir -p dist-apk
+          APK_FILE=$(find rust/target -name "*.apk" | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: Aucun fichier APK trouvé !"
+            exit 1
+          fi
+          echo "Found APK: $APK_FILE"
+          cp "$APK_FILE" dist-apk/ultrahdr-studio.apk
+          ls -lh dist-apk/ultrahdr-studio.apk
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ultrahdr-android-apk
+          path: dist-apk/ultrahdr-studio.apk
+
   release:
-    name: Publish GitHub Release
-    needs: [build-linux, build-windows]
+    name: Publish GitHub Multiplatform Release
+    needs: [build-linux, build-windows, build-android]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
@@ -100,11 +149,18 @@ jobs:
           name: ultrahdr-windows-x64
           path: release-windows
 
+      - name: Download Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: ultrahdr-android-apk
+          path: release-android
+
       - name: Package Binaries
         run: |
           chmod +x release-linux/ultrahdr
           tar -czf ultrahdr-linux-x64.tar.gz -C release-linux ultrahdr
           zip -j ultrahdr-windows-x64.zip release-windows/ultrahdr.exe
+          cp release-android/ultrahdr-studio.apk ultrahdr-studio-android.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -112,5 +168,5 @@ jobs:
           files: |
             ultrahdr-linux-x64.tar.gz
             ultrahdr-windows-x64.zip
+            ultrahdr-studio-android.apk
           generate_release_notes: true
-

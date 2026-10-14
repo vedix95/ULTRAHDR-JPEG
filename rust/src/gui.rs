@@ -259,68 +259,145 @@ impl UltraHdrApp {
         }
     }
 
+    pub fn setup_loaded_image(&mut self, img: LoadedImage, ctx: &egui::Context) {
+        let analysis = analyze_image_potential(
+            img.is_native_hdr,
+            &img.linear_rgb,
+            img.dynamic_range_stops,
+            &img.format_name,
+        );
+
+        let rec = &analysis.recommended_preset;
+        self.params.peak_nits = rec.peak_nits;
+        self.params.sdr_white = rec.sdr_white;
+        self.params.shadow_boost = rec.shadow_boost;
+        self.params.hi_gamma = rec.hi_gamma;
+        self.params.highlight_threshold = rec.highlight_threshold;
+        self.params.hdr_boost = 1.0;
+        self.params.highlight_rolloff = 0.75;
+        self.params.tone_map_mode = "vivid".to_string();
+        self.params.tonal_contrast = 0.0;
+        self.params.tonal_whites = 0.0;
+        self.params.tonal_highlights = 0.0;
+        self.params.tonal_shadows = 0.0;
+        self.params.tonal_blacks = 0.0;
+        self.params.tonal_saturation = 0.0;
+        self.params.tonal_vibrance = 0.0;
+        self.params.anti_halo = 0.40;
+        self.targeted_tool_active = false;
+        self.hovered_zone = None;
+        self.compare_toggled = false;
+
+        // ⚡ Génération du tampon de prévisualisation rapide (1280px max)
+        let preview = create_preview_buffer(&img, 1280);
+
+        // Calcul de l'histogramme des 4 zones
+        self.cached_histogram = Some(compute_luminance_histogram(&preview.sdr_uint8));
+
+        // Texture SDR Original : mise en cache UNE SEULE FOIS (aucun recalcul inutile lors des glissements)
+        let color_img_sdr = egui::ColorImage::from_rgb(
+            [preview.width as usize, preview.height as usize],
+            &preview.sdr_uint8,
+        );
+        self.tex_original_sdr = Some(ctx.load_texture("sdr_orig", color_img_sdr, egui::TextureOptions::LINEAR));
+
+        // Invalidation des textures dépendantes
+        self.tex_hdr_preview = None;
+        self.tex_gain_map = None;
+        self.tex_heatmap = None;
+
+        self.preview_buffer = Some(preview);
+        self.analysis = Some(analysis);
+        let name = img.filename.clone();
+        self.loaded_image = Some(img);
+        self.zoom = 1.0;
+        self.pan = Vec2::ZERO;
+
+        // Calcul initial des textures de prévisualisation
+        self.recompute_and_update_textures(ctx);
+        self.set_status(&format!("Fichier chargé : {}", name), Color32::from_rgb(46, 204, 113));
+    }
+
     pub fn load_file(&mut self, path: &Path, ctx: &egui::Context) {
         match load_image(path) {
-            Ok(img) => {
-                let analysis = analyze_image_potential(
-                    img.is_native_hdr,
-                    &img.linear_rgb,
-                    img.dynamic_range_stops,
-                    &img.format_name,
-                );
-
-                let rec = &analysis.recommended_preset;
-                self.params.peak_nits = rec.peak_nits;
-                self.params.sdr_white = rec.sdr_white;
-                self.params.shadow_boost = rec.shadow_boost;
-                self.params.hi_gamma = rec.hi_gamma;
-                self.params.highlight_threshold = rec.highlight_threshold;
-                self.params.hdr_boost = 1.0;
-                self.params.highlight_rolloff = 0.75;
-                self.params.tone_map_mode = "vivid".to_string();
-                self.params.tonal_contrast = 0.0;
-                self.params.tonal_whites = 0.0;
-                self.params.tonal_highlights = 0.0;
-                self.params.tonal_shadows = 0.0;
-                self.params.tonal_blacks = 0.0;
-                self.params.tonal_saturation = 0.0;
-                self.params.tonal_vibrance = 0.0;
-                self.params.anti_halo = 0.40;
-                self.targeted_tool_active = false;
-                self.hovered_zone = None;
-                self.compare_toggled = false;
-
-                // ⚡ Génération du tampon de prévisualisation rapide (1280px max)
-                let preview = create_preview_buffer(&img, 1280);
-
-                // Calcul de l'histogramme des 4 zones
-                self.cached_histogram = Some(compute_luminance_histogram(&preview.sdr_uint8));
-
-                // Texture SDR Original : mise en cache UNE SEULE FOIS (aucun recalcul inutile lors des glissements)
-                let color_img_sdr = egui::ColorImage::from_rgb(
-                    [preview.width as usize, preview.height as usize],
-                    &preview.sdr_uint8,
-                );
-                self.tex_original_sdr = Some(ctx.load_texture("sdr_orig", color_img_sdr, egui::TextureOptions::LINEAR));
-
-                // Invalidation des textures dépendantes
-                self.tex_hdr_preview = None;
-                self.tex_gain_map = None;
-                self.tex_heatmap = None;
-
-                self.preview_buffer = Some(preview);
-                self.analysis = Some(analysis);
-                self.loaded_image = Some(img);
-                self.zoom = 1.0;
-                self.pan = Vec2::ZERO;
-
-                // Calcul initial des textures de prévisualisation
-                self.recompute_and_update_textures(ctx);
-                self.set_status(&format!("Fichier chargé : {}", path.display()), Color32::from_rgb(46, 204, 113));
-            }
+            Ok(img) => self.setup_loaded_image(img, ctx),
             Err(e) => {
                 self.set_status(&format!("Erreur : {}", e), Color32::from_rgb(231, 76, 60));
             }
+        }
+    }
+
+    /// Génère instantanément une scène de test Ultra HDR de coucher de soleil en haute dynamique.
+    pub fn load_demo_image(&mut self, ctx: &egui::Context) {
+        let width = 1280u32;
+        let height = 720u32;
+        let mut sdr = Vec::with_capacity((width * height * 3) as usize);
+        let mut linear = Vec::with_capacity((width * height * 3) as usize);
+
+        for y in 0..height {
+            let ny = y as f32 / height as f32;
+            for x in 0..width {
+                let nx = x as f32 / width as f32;
+                let dx = nx - 0.5;
+                let dy = (ny - 0.35) * 0.7;
+                let dist = (dx * dx + dy * dy).sqrt();
+
+                let sky_r = (1.0 - ny * 0.55).clamp(0.0, 1.0);
+                let sky_g = ((1.0 - ny * 0.75) * 0.65).clamp(0.0, 1.0);
+                let sky_b = (ny * 0.65 + 0.15).clamp(0.0, 1.0);
+
+                let sun_flare = (1.0 / (dist * 10.0 + 1.0)).powf(2.0);
+                let sun_core = if dist < 0.045 { 1.0 } else { 0.0 };
+
+                let hdr_r = sky_r + sun_flare * 4.5 + sun_core * 12.0;
+                let hdr_g = sky_g + sun_flare * 3.2 + sun_core * 10.0;
+                let hdr_b = sky_b + sun_flare * 1.8 + sun_core * 6.5;
+
+                linear.push(hdr_r);
+                linear.push(hdr_g);
+                linear.push(hdr_b);
+
+                let sdr_r = ((hdr_r / (hdr_r + 1.0)).powf(1.0 / 2.2) * 255.0).clamp(0.0, 255.0) as u8;
+                let sdr_g = ((hdr_g / (hdr_g + 1.0)).powf(1.0 / 2.2) * 255.0).clamp(0.0, 255.0) as u8;
+                let sdr_b = ((hdr_b / (hdr_b + 1.0)).powf(1.0 / 2.2) * 255.0).clamp(0.0, 255.0) as u8;
+
+                sdr.push(sdr_r);
+                sdr.push(sdr_g);
+                sdr.push(sdr_b);
+            }
+        }
+
+        let loaded = LoadedImage {
+            filename: "demo_coucher_de_soleil_ultrahdr.jpg".to_string(),
+            format_name: "Ultra HDR Synthétique Démo".to_string(),
+            file_size_bytes: (width * height * 3) as u64,
+            source_bit_depth: 16,
+            width,
+            height,
+            is_native_hdr: true,
+            dynamic_range_stops: 10.8,
+            exif_bytes: None,
+            sdr_uint8: sdr,
+            linear_rgb: linear,
+        };
+
+        self.setup_loaded_image(loaded, ctx);
+    }
+
+    /// Déclenche l'ouverture de fichier selon la plateforme (rfd sur desktop, modal sur mobile).
+    pub fn trigger_pick_file(&mut self, ctx: &egui::Context) {
+        #[cfg(not(target_os = "android"))]
+        {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Images (*.jpg, *.png, *.webp, *.hdr, *.exr, *.tif)", &["jpg", "jpeg", "png", "webp", "hdr", "exr", "tif", "tiff", "bmp"])
+                .pick_file()
+            {
+                self.load_file(&path, ctx);
+            }
+        }
+        #[cfg(target_os = "android")]
+        {
+            self.show_open_dialog = true;
         }
     }
 
@@ -434,14 +511,21 @@ impl UltraHdrApp {
 
         let default_out = format!("{}_UltraHDR.jpg", stem);
 
-        let out_path = rfd::FileDialog::new()
+        #[cfg(not(target_os = "android"))]
+        let target_path = match rfd::FileDialog::new()
             .set_file_name(&default_out)
             .add_filter("JPEG Ultra HDR (*.jpg)", &["jpg", "jpeg"])
-            .save_file();
-
-        let target_path = match out_path {
+            .save_file()
+        {
             Some(p) => p,
             None => return,
+        };
+
+        #[cfg(target_os = "android")]
+        let target_path = {
+            let pictures_dir = PathBuf::from("/sdcard/Pictures/UltraHDR");
+            let _ = std::fs::create_dir_all(&pictures_dir);
+            pictures_dir.join(&default_out)
         };
 
         self.set_status("Calcul et encodage pleine résolution en cours...", Color32::from_rgb(0, 200, 255));
@@ -686,9 +770,11 @@ impl eframe::App for UltraHdrApp {
             }
         }
 
-        // ── Détection de l'orientation et mode responsive vertical / mobile ──
+        // ── Détection de l'orientation et mode responsive multi-formats Android ──
+        let is_android = cfg!(target_os = "android");
+        let form_factor = crate::theme_material::apply_material_3_theme(ctx, is_android);
         let screen_rect = ctx.screen_rect();
-        let is_vertical = screen_rect.width() < screen_rect.height() || screen_rect.width() < 880.0;
+        let is_vertical = form_factor.is_bottom_sheet() || (screen_rect.width() < screen_rect.height()) || screen_rect.width() < 840.0;
 
         // ── 1. Barre Supérieure (Header Responsive Material Design) ──
         egui::TopBottomPanel::top("top_panel")
@@ -757,12 +843,7 @@ impl eframe::App for UltraHdrApp {
                             .rounding(Rounding::same(6.0));
 
                             if ui.add(btn_open).on_hover_text("Ouvrir une image...").clicked() {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Images (*.jpg, *.png, *.webp, *.hdr, *.exr, *.tif)", &["jpg", "jpeg", "png", "webp", "hdr", "exr", "tif", "tiff", "bmp"])
-                                    .pick_file()
-                                {
-                                    self.load_file(&path, ctx);
-                                }
+                                self.trigger_pick_file(ctx);
                             }
 
                             let btn_batch = egui::Button::new(
@@ -910,12 +991,7 @@ impl eframe::App for UltraHdrApp {
                             .rounding(Rounding::same(6.0));
 
                             if ui.add(btn_open).clicked() {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Images (*.jpg, *.png, *.webp, *.hdr, *.exr, *.tif)", &["jpg", "jpeg", "png", "webp", "hdr", "exr", "tif", "tiff", "bmp"])
-                                    .pick_file()
-                                {
-                                    self.load_file(&path, ctx);
-                                }
+                                self.trigger_pick_file(ctx);
                             }
                         });
                     });
@@ -927,11 +1003,72 @@ impl eframe::App for UltraHdrApp {
             egui::Window::new("Ouvrir un fichier image")
                 .collapsible(false)
                 .resizable(false)
+                .default_width(360.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    ui.label("Entrez le chemin d'accès complet du fichier image :");
+                    ui.vertical_centered(|ui| {
+                        let btn_demo = egui::Button::new(
+                            egui::RichText::new("🌅 Charger la Démo Ultra HDR").strong().size(14.0).color(Color32::WHITE),
+                        )
+                        .fill(Color32::from_rgb(0, 120, 212))
+                        .rounding(Rounding::same(24.0));
+
+                        if ui.add_sized([ui.available_width(), 44.0], btn_demo).clicked() {
+                            self.load_demo_image(ctx);
+                            self.show_open_dialog = false;
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    // Dossiers photos Android standards
+                    let standard_dirs = [
+                        ("/sdcard/DCIM/Camera", "📸 Photos Appareil (DCIM)"),
+                        ("/sdcard/Pictures", "🖼️ Dossier Images"),
+                        ("/sdcard/Download", "📥 Téléchargements"),
+                    ];
+
+                    let mut file_to_load = None;
+                    for (dir_path, dir_label) in standard_dirs {
+                        let p = Path::new(dir_path);
+                        if p.exists() && p.is_dir() {
+                            ui.label(egui::RichText::new(dir_label).strong().size(12.5).color(Color32::from_rgb(138, 180, 248)));
+                            if let Ok(entries) = std::fs::read_dir(p) {
+                                let mut images: Vec<PathBuf> = entries
+                                    .filter_map(|e| e.ok().map(|e| e.path()))
+                                    .filter(|p| {
+                                        p.extension()
+                                            .and_then(|ext| ext.to_str())
+                                            .map(|ext| matches!(ext.to_lowercase().as_str(), "jpg" | "jpeg" | "png" | "webp" | "hdr" | "exr"))
+                                            .unwrap_or(false)
+                                    })
+                                    .take(6)
+                                    .collect();
+                                images.sort_by(|a, b| b.cmp(a));
+                                for img_path in images {
+                                    let fname = img_path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                                    if ui.button(format!("📷 {}", fname)).clicked() {
+                                        file_to_load = Some(img_path);
+                                    }
+                                }
+                            }
+                            ui.add_space(4.0);
+                        }
+                    }
+
+                    if let Some(target) = file_to_load {
+                        self.load_file(&target, ctx);
+                        self.show_open_dialog = false;
+                    }
+
+                    ui.label("Ou entrez un chemin complet :");
                     ui.text_edit_singleline(&mut self.open_path_input);
+                    ui.add_space(4.0);
+
                     ui.horizontal(|ui| {
-                        if ui.button("Charger").clicked() {
+                        if ui.button("Ouvrir ce chemin").clicked() {
                             let path = PathBuf::from(self.open_path_input.trim());
                             if path.exists() {
                                 self.load_file(&path, ctx);
@@ -940,7 +1077,7 @@ impl eframe::App for UltraHdrApp {
                                 self.set_status("Chemin introuvable", Color32::from_rgb(231, 76, 60));
                             }
                         }
-                        if ui.button("Annuler").clicked() {
+                        if ui.button("Fermer").clicked() {
                             self.show_open_dialog = false;
                         }
                     });
@@ -959,6 +1096,7 @@ impl eframe::App for UltraHdrApp {
                     ui.horizontal(|ui| {
                         ui.label("Dossier source :");
                         ui.text_edit_singleline(&mut self.batch_input_dir);
+                        #[cfg(not(target_os = "android"))]
                         if ui.button("Parcourir...").clicked() {
                             if let Some(path) = rfd::FileDialog::new().pick_folder() {
                                 self.batch_input_dir = path.to_string_lossy().to_string();
@@ -968,6 +1106,7 @@ impl eframe::App for UltraHdrApp {
                     ui.horizontal(|ui| {
                         ui.label("Dossier cible (opt.) :");
                         ui.text_edit_singleline(&mut self.batch_output_dir);
+                        #[cfg(not(target_os = "android"))]
                         if ui.button("Parcourir...").clicked() {
                             if let Some(path) = rfd::FileDialog::new().pick_folder() {
                                 self.batch_output_dir = path.to_string_lossy().to_string();
@@ -1897,65 +2036,80 @@ impl UltraHdrApp {
     }
 
     fn ui_vertical_control_deck(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            // Rail sélecteur vertical gauche (Boutons tactiles ergonomiques pour mobile)
+        let panes = [
+            ConfigPane::Tonal,
+            ConfigPane::Simulation,
+            ConfigPane::Engine,
+            ConfigPane::Export,
+        ];
+
+        let avail_w = ui.available_width();
+        if avail_w < 540.0 {
+            // Disposition Smartphone Portrait Étroite (16:9, 18:9, 19.5:9, 20:9, 21:9) :
+            // Puces horizontales Material 3 en haut + Panneau pleine largeur en dessous
             ui.vertical(|ui| {
-                ui.set_width(108.0);
-                let panes = [
-                    ConfigPane::Tonal,
-                    ConfigPane::Simulation,
-                    ConfigPane::Engine,
-                    ConfigPane::Export,
-                ];
-
-                for pane in panes {
-                    let is_active = self.active_config_pane == pane;
-                    let btn_text = format!("{} {}", pane.icon(), pane.title());
-                    let btn = egui::Button::new(
-                        egui::RichText::new(btn_text)
-                            .size(12.0)
-                            .strong()
-                            .color(if is_active { Color32::WHITE } else { Color32::from_rgb(175, 185, 205) }),
-                    )
-                    .fill(if is_active { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(25, 29, 41) })
-                    .stroke(Stroke::new(1.0f32, if is_active { Color32::from_rgb(0, 200, 255) } else { Color32::from_rgb(44, 50, 70) }))
-                    .rounding(Rounding::same(8.0));
-
-                    if ui.add_sized([108.0, 38.0], btn).clicked() {
-                        self.active_config_pane = pane;
+                ui.horizontal_wrapped(|ui| {
+                    for pane in panes {
+                        let is_active = self.active_config_pane == pane;
+                        let label = format!("{} {}", pane.icon(), pane.title());
+                        if crate::theme_material::material_chip(ui, is_active, &label).clicked() {
+                            self.active_config_pane = pane;
+                        }
                     }
-                    ui.add_space(3.0);
-                }
-            });
+                });
 
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
 
-            // Conteneur vertical droit pour le panneau actif (Strictement TopDown vertical)
-            ui.vertical(|ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.vertical(|ui| {
                             match self.active_config_pane {
-                                ConfigPane::Tonal => {
-                                    self.ui_panel_tonal_content(ui, ctx, true);
-                                }
-                                ConfigPane::Simulation => {
-                                    self.ui_panel_simulation_content(ui, ctx, true);
-                                }
-                                ConfigPane::Engine => {
-                                    self.ui_panel_engine_content(ui, ctx, true);
-                                }
-                                ConfigPane::Export => {
-                                    self.ui_panel_export_content(ui, ctx, true);
-                                }
+                                ConfigPane::Tonal => self.ui_panel_tonal_content(ui, ctx, true),
+                                ConfigPane::Simulation => self.ui_panel_simulation_content(ui, ctx, true),
+                                ConfigPane::Engine => self.ui_panel_engine_content(ui, ctx, true),
+                                ConfigPane::Export => self.ui_panel_export_content(ui, ctx, true),
                             }
                         });
                     });
             });
-        });
+        } else {
+            // Disposition Foldable dépliée / Tablette : Rail vertical gauche + contenu droit
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(110.0);
+                    for pane in panes {
+                        let is_active = self.active_config_pane == pane;
+                        let label = format!("{} {}", pane.icon(), pane.title());
+                        if crate::theme_material::material_chip(ui, is_active, &label).clicked() {
+                            self.active_config_pane = pane;
+                        }
+                        ui.add_space(4.0);
+                    }
+                });
+
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                ui.vertical(|ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                match self.active_config_pane {
+                                    ConfigPane::Tonal => self.ui_panel_tonal_content(ui, ctx, true),
+                                    ConfigPane::Simulation => self.ui_panel_simulation_content(ui, ctx, true),
+                                    ConfigPane::Engine => self.ui_panel_engine_content(ui, ctx, true),
+                                    ConfigPane::Export => self.ui_panel_export_content(ui, ctx, true),
+                                }
+                            });
+                        });
+                });
+            });
+        }
     }
 
     fn apply_preset(&mut self, preset: &HDRPreset) {
@@ -2103,18 +2257,24 @@ impl UltraHdrApp {
                             );
                             ui.add_space(16.0);
                             let btn_browse = egui::Button::new(
-                                egui::RichText::new("Sélectionner un fichier...").strong().size(14.0).color(Color32::WHITE),
+                                egui::RichText::new("Sélectionner une photo...").strong().size(14.0).color(Color32::WHITE),
                             )
                             .fill(Color32::from_rgb(0, 120, 212))
-                            .rounding(Rounding::same(6.0));
+                            .rounding(Rounding::same(24.0));
 
-                            if ui.add_sized([200.0, 36.0], btn_browse).clicked() {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Images (*.jpg, *.png, *.webp, *.hdr, *.exr, *.tif)", &["jpg", "jpeg", "png", "webp", "hdr", "exr", "tif", "tiff", "bmp"])
-                                    .pick_file()
-                                {
-                                    self.load_file(&path, ctx);
-                                }
+                            if ui.add_sized([220.0, 42.0], btn_browse).clicked() {
+                                self.trigger_pick_file(ctx);
+                            }
+
+                            ui.add_space(8.0);
+                            let btn_demo = egui::Button::new(
+                                egui::RichText::new("🌅 Charger la Démo Ultra HDR").strong().size(13.0).color(Color32::from_rgb(220, 240, 255)),
+                            )
+                            .fill(Color32::from_rgb(38, 55, 80))
+                            .rounding(Rounding::same(24.0));
+
+                            if ui.add_sized([220.0, 38.0], btn_demo).clicked() {
+                                self.load_demo_image(ctx);
                             }
                         });
                     });
@@ -2932,7 +3092,16 @@ fn detect_hdr_display() -> (bool, String, f32) {
         (is_hdr, info, peak_nits)
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "android")]
+    {
+        (
+            true,
+            "Écran Mobile OLED HDR (Samsung AMOLED / Google Pixel Ultra HDR ~1200 nits, DCI-P3)".to_string(),
+            1200.0,
+        )
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "android")))]
     {
         let is_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
             || std::env::var("XDG_SESSION_TYPE").map(|v| v == "wayland").unwrap_or(false);
@@ -3044,3 +3213,31 @@ pub fn run_native_gui(initial_file: Option<PathBuf>) -> Result<(), eframe::Error
         }),
     )
 }
+
+/// Point d'entrée natif pour l'application Android (NativeActivity / eframe).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub fn android_main(app: android_activity::AndroidApp) {
+    use winit::platform::android::EventLoopBuilderExtAndroid;
+
+    let _ = android_logger::init_once(
+        android_logger::Config::default().with_max_level(log::LevelFilter::Info),
+    );
+
+    let mut native_options = eframe::NativeOptions::default();
+    native_options.event_loop_builder = Some(Box::new(move |builder| {
+        builder.with_android_app(app);
+    }));
+
+    let _ = eframe::run_native(
+        "UltraHDR Studio",
+        native_options,
+        Box::new(|cc| {
+            let mut app = UltraHdrApp::new(cc);
+            // Charge automatiquement la scène de test Ultra HDR au démarrage sur Android
+            app.load_demo_image(&cc.egui_ctx);
+            Box::new(app)
+        }),
+    );
+}
+

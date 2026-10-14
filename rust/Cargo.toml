@@ -5,6 +5,15 @@ edition = "2021"
 authors = ["UltraHDR Studio"]
 description = "Ultra HDR Gain Map Generator & Native Viewer in Rust (ISO 21496-1 / Google Ultra HDR)"
 
+[lib]
+name = "ultrahdr"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ultrahdr"
+path = "src/main.rs"
+
 [dependencies]
 eframe = { version = "0.27", default-features = false, features = ["wgpu", "wayland", "x11"] }
 egui = "0.27"
@@ -14,6 +23,33 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 rfd = "0.14"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.5.2", features = ["native-activity"] }
+android_logger = "0.13"
+log = "0.4"
+winit = { version = "0.29", default-features = false, features = ["android-native-activity"] }
+
+[package.metadata.android]
+package = "com.ultrahdr.studio"
+label = "UltraHDR Studio"
+apk_name = "ultrahdr-studio"
+assets = "assets"
+build_targets = ["aarch64-linux-android"]
+min_sdk_version = 26
+target_sdk_version = 34
+icon = "@mipmap/ic_launcher"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_MEDIA_IMAGES"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_EXTERNAL_STORAGE"
+max_sdk_version = 32
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.WRITE_EXTERNAL_STORAGE"
+max_sdk_version = 29
 
 [profile.release]
 opt-level = 3

@@ -4,3 +4,4 @@ pub mod analyzer;
 pub mod engine;
 pub mod gui;
 pub mod loader;
+pub mod theme_material;

@@ -7,6 +7,7 @@ mod analyzer;
 mod engine;
 mod gui;
 mod loader;
+mod theme_material;
 
 use std::fs;
 use std::path::{Path, PathBuf};
