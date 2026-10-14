@@ -1,6 +1,6 @@
 [package]
 name = "ultrahdr"
-version = "1.1.1"
+version = "1.0.0"
 edition = "2021"
 authors = ["UltraHDR Studio"]
 description = "Ultra HDR Gain Map Generator & Native Viewer in Rust (ISO 21496-1 / Google Ultra HDR)"

@@ -187,8 +187,8 @@ jobs:
             echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
             echo "title=UltraHDR Studio ${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=v1.1.1" >> $GITHUB_OUTPUT
-            echo "title=UltraHDR Studio v1.1.1 (Windows, Linux, Android)" >> $GITHUB_OUTPUT
+            echo "tag=v1.0.0" >> $GITHUB_OUTPUT
+            echo "title=UltraHDR Studio v1.0.0 (Windows, Linux, Android)" >> $GITHUB_OUTPUT
           fi
 
       - name: Create or Update GitHub Release
