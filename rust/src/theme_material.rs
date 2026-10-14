@@ -121,67 +121,61 @@ pub fn apply_material_3_theme(ctx: &Context, is_android: bool) -> ScreenFormFact
     let screen_size = screen_rect.size();
     let form_factor = ScreenFormFactor::detect(screen_size);
 
-    if is_android {
-        if ctx.zoom_factor() < 1.35 {
-            ctx.set_zoom_factor(1.35);
-        }
+    // Egui natively scales by Android's physical display metrics (pixels_per_point).
+    // Ensure zoom_factor stays at 1.0 to avoid doubling the scale and ballooning the UI.
+    if ctx.zoom_factor() != 1.0 {
+        ctx.set_zoom_factor(1.0);
     }
 
+    let is_mobile = is_android || form_factor == ScreenFormFactor::SmartphonePortrait;
     let mut style = (*ctx.style()).clone();
 
-    // 1. Typography Hierarchy with readable mobile sizes
-    let font_scale = if is_android {
-        1.25_f32
-    } else if form_factor == ScreenFormFactor::SmartphonePortrait {
-        1.10_f32
-    } else {
-        1.0_f32
-    };
+    // 1. Typography Hierarchy with readable, properly proportioned sizes
+    let font_scale = if is_mobile { 0.95_f32 } else { 1.0_f32 };
 
     style.text_styles = [
         (
             TextStyle::Heading,
-            FontId::new(22.0_f32 * font_scale, FontFamily::Proportional),
-        ),
-        (
-            TextStyle::Name("Title".into()),
             FontId::new(18.0_f32 * font_scale, FontFamily::Proportional),
         ),
         (
-            TextStyle::Body,
-            FontId::new(15.5_f32 * font_scale, FontFamily::Proportional),
-        ),
-        (
-            TextStyle::Button,
+            TextStyle::Name("Title".into()),
             FontId::new(15.0_f32 * font_scale, FontFamily::Proportional),
         ),
         (
-            TextStyle::Small,
+            TextStyle::Body,
             FontId::new(13.0_f32 * font_scale, FontFamily::Proportional),
         ),
         (
+            TextStyle::Button,
+            FontId::new(12.5_f32 * font_scale, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Small,
+            FontId::new(11.0_f32 * font_scale, FontFamily::Proportional),
+        ),
+        (
             TextStyle::Monospace,
-            FontId::new(13.0_f32 * font_scale, FontFamily::Monospace),
+            FontId::new(11.5_f32 * font_scale, FontFamily::Monospace),
         ),
     ]
     .into();
 
-    // 2. Material 3 Touch Targets & Spacing (>= 48dp touch heights)
-    let touch_padding_y = if is_android || form_factor == ScreenFormFactor::SmartphonePortrait {
-        12.0_f32
+    // 2. Material 3 Touch Targets & Spacing (clean, compact, no gigantic slider balls)
+    if is_mobile {
+        style.spacing.button_padding = Vec2::new(8.0_f32, 5.0_f32);
+        style.spacing.item_spacing = Vec2::new(6.0_f32, 6.0_f32);
+        style.spacing.slider_width = 160.0_f32;
+        // Standard thumb height (18dp) so slider knob is an elegant small dot, not a giant ball
+        style.spacing.interact_size = Vec2::new(22.0_f32, 18.0_f32);
+        style.spacing.scroll.bar_width = 6.0_f32;
     } else {
-        7.0_f32
-    };
-
-    style.spacing.button_padding = Vec2::new(if is_android { 18.0 } else { 14.0 }, touch_padding_y);
-    style.spacing.item_spacing = Vec2::new(10.0_f32, 10.0_f32);
-    style.spacing.slider_width = if is_android { 200.0 } else { 160.0 };
-    // Enhanced touch slider thumb (>= 48dp)
-    style.spacing.interact_size = Vec2::new(
-        48.0_f32,
-        if is_android { 48.0_f32 } else { 34.0_f32 },
-    );
-    style.spacing.scroll.bar_width = if is_android { 10.0 } else { 8.0 };
+        style.spacing.button_padding = Vec2::new(10.0_f32, 6.0_f32);
+        style.spacing.item_spacing = Vec2::new(8.0_f32, 8.0_f32);
+        style.spacing.slider_width = 180.0_f32;
+        style.spacing.interact_size = Vec2::new(24.0_f32, 20.0_f32);
+        style.spacing.scroll.bar_width = 8.0_f32;
+    }
 
     // 3. Material Design 3 Visuals & Dark Color Palette
     let mut visuals = Visuals::dark();
@@ -195,7 +189,7 @@ pub fn apply_material_3_theme(ctx: &Context, is_android: bool) -> ScreenFormFact
     visuals.extreme_bg_color = colors::SURFACE_0;
 
     // Window & Card Rounding (Material Card = 16dp)
-    visuals.window_rounding = Rounding::same(16.0_f32);
+    visuals.window_rounding = Rounding::same(12.0_f32);
     visuals.window_stroke = Stroke::new(1.0_f32, colors::OUTLINE_VARIANT);
     visuals.window_shadow = Shadow {
         offset: Vec2::new(0.0_f32, 4.0_f32),
@@ -204,8 +198,8 @@ pub fn apply_material_3_theme(ctx: &Context, is_android: bool) -> ScreenFormFact
         color: Color32::from_black_alpha(80),
     };
 
-    // Button & Chip Pill Rounding (Material Pill = 24dp)
-    let pill_rounding = Rounding::same(24.0_f32);
+    // Button & Chip Pill Rounding (Material Pill = 20dp)
+    let pill_rounding = Rounding::same(16.0_f32);
 
     // Inactive Widgets
     visuals.widgets.inactive.bg_fill = colors::SURFACE_CONTAINER;
@@ -241,13 +235,13 @@ pub fn apply_material_3_theme(ctx: &Context, is_android: bool) -> ScreenFormFact
     form_factor
 }
 
-/// Helper to render a Material 3 Pill Filter Chip (used for tab selection)
+/// Helper to render a Material 3 Pill Filter Chip (used for mode and filter selection)
 pub fn material_chip(ui: &mut Ui, selected: bool, label: &str) -> Response {
     let (bg_fill, fg_color, stroke) = if selected {
         (
             colors::PRIMARY_CONTAINER,
             colors::ON_PRIMARY_CONTAINER,
-            Stroke::new(1.5_f32, colors::PRIMARY),
+            Stroke::new(1.2_f32, colors::PRIMARY),
         )
     } else {
         (
@@ -257,16 +251,16 @@ pub fn material_chip(ui: &mut Ui, selected: bool, label: &str) -> Response {
         )
     };
 
-    let padding = Vec2::new(14.0_f32, 7.0_f32);
-    let rounding = Rounding::same(20.0_f32);
+    let padding = Vec2::new(8.0_f32, 4.0_f32);
+    let rounding = Rounding::same(14.0_f32);
 
-    let font_id = FontId::new(13.5_f32, FontFamily::Proportional);
+    let font_id = FontId::new(12.0_f32, FontFamily::Proportional);
     let galley = ui.painter().layout_no_wrap(label.to_string(), font_id, fg_color);
     let text_size = galley.size();
     let desired_size = text_size + padding * 2.0_f32;
 
     let (rect, response) = ui.allocate_exact_size(
-        desired_size.max(Vec2::new(44.0_f32, 36.0_f32)),
+        desired_size.max(Vec2::new(32.0_f32, 28.0_f32)),
         egui::Sense::click(),
     );
 
@@ -279,6 +273,47 @@ pub fn material_chip(ui: &mut Ui, selected: bool, label: &str) -> Response {
 
         ui.painter().rect(rect, rounding, hover_adjust, stroke);
         let text_pos = rect.center() - text_size / 2.0_f32;
+        ui.painter().galley(text_pos, galley, fg_color);
+    }
+
+    response
+}
+
+/// Helper to render a Material 3 Navigation Tab spanning a defined width
+pub fn material_tab(ui: &mut Ui, selected: bool, icon: &str, label: &str, width: f32) -> Response {
+    let (bg_fill, fg_color, stroke) = if selected {
+        (
+            colors::PRIMARY_CONTAINER,
+            colors::ON_PRIMARY_CONTAINER,
+            Stroke::new(1.2_f32, colors::PRIMARY),
+        )
+    } else {
+        (
+            colors::SURFACE_CONTAINER,
+            colors::ON_SURFACE_VARIANT,
+            Stroke::new(1.0_f32, colors::OUTLINE_VARIANT),
+        )
+    };
+
+    let rounding = Rounding::same(10.0_f32);
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(width.max(48.0_f32), 32.0_f32),
+        egui::Sense::click(),
+    );
+
+    if ui.is_rect_visible(rect) {
+        let hover_adjust = if response.hovered() {
+            colors::SURFACE_CONTAINER_HIGH
+        } else {
+            bg_fill
+        };
+
+        ui.painter().rect(rect, rounding, hover_adjust, stroke);
+
+        let text = format!("{} {}", icon, label);
+        let font_id = FontId::new(11.0_f32, FontFamily::Proportional);
+        let galley = ui.painter().layout_no_wrap(text, font_id, fg_color);
+        let text_pos = rect.center() - galley.size() / 2.0_f32;
         ui.painter().galley(text_pos, galley, fg_color);
     }
 

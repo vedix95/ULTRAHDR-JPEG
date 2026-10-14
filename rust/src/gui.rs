@@ -817,46 +817,16 @@ impl eframe::App for UltraHdrApp {
 
         // ── 1. Barre Supérieure (Header Responsive Material Design) ──
         egui::TopBottomPanel::top("top_panel")
-            .frame(egui::Frame::none().fill(Color32::from_rgb(15, 17, 24)).inner_margin(egui::Margin::symmetric(if is_vertical { 8.0 } else { 14.0 }, 8.0)))
+            .frame(egui::Frame::none().fill(Color32::from_rgb(15, 17, 24)).inner_margin(egui::Margin::symmetric(if is_vertical { 8.0 } else { 14.0 }, 6.0)))
             .show(ctx, |ui| {
                 if is_vertical {
-                    // En-tête compact optimisé mobile / écran vertical
+                    // En-tête compact optimisé mobile / écran vertical : AUCUNE superposition
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("✨").size(16.0));
-                        ui.label(egui::RichText::new("UltraHDR").size(15.0).strong().color(Color32::from_rgb(0, 200, 255)));
-
-                        let (badge_bg, badge_border, badge_text_col, badge_text, hover_tip) = if self.is_hdr_display_active {
-                            (
-                                Color32::from_rgb(14, 45, 26),
-                                Color32::from_rgb(34, 197, 94),
-                                Color32::from_rgb(220, 252, 231),
-                                "🟢 HDR",
-                                "Écran HDR matériel actif",
-                            )
-                        } else {
-                            (
-                                Color32::from_rgb(20, 32, 52),
-                                Color32::from_rgb(56, 189, 248),
-                                Color32::from_rgb(224, 242, 254),
-                                "🖥️ SDR",
-                                "Écran SDR standard (simulation active)",
-                            )
-                        };
-
-                        egui::Frame::none()
-                            .fill(badge_bg)
-                            .stroke(Stroke::new(1.0f32, badge_border))
-                            .rounding(Rounding::same(10.0))
-                            .inner_margin(egui::Margin::symmetric(6.0, 2.0))
-                            .show(ui, |ui| {
-                                ui.label(egui::RichText::new(badge_text).size(11.0).strong().color(badge_text_col));
-                            })
-                            .response
-                            .on_hover_text(hover_tip);
+                        ui.label(egui::RichText::new("✨ UltraHDR").size(15.0).strong().color(Color32::from_rgb(0, 200, 255)));
 
                         if let Some(img) = &self.loaded_image {
-                            let display_name = if img.filename.len() > 16 {
-                                format!("{}...", &img.filename[..13])
+                            let display_name = if img.filename.len() > 10 {
+                                format!("{}...", &img.filename[..8])
                             } else {
                                 img.filename.clone()
                             };
@@ -1189,29 +1159,31 @@ impl eframe::App for UltraHdrApp {
                 });
         }
 
-        // ── 2. Barre d'État Inférieure (Footer) ──
-        egui::TopBottomPanel::bottom("bottom_status_bar")
-            .frame(egui::Frame::none().fill(Color32::from_rgb(14, 15, 20)).inner_margin(egui::Margin::symmetric(14.0, 5.0)))
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some((msg, time, col)) = &self.status_message {
-                        if time.elapsed().as_secs() < 10 {
-                            ui.colored_label(*col, msg);
+        // ── 2. Barre d'État Inférieure (Footer Bureau Uniquement) ──
+        if !is_vertical {
+            egui::TopBottomPanel::bottom("bottom_status_bar")
+                .frame(egui::Frame::none().fill(Color32::from_rgb(14, 15, 20)).inner_margin(egui::Margin::symmetric(14.0, 5.0)))
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        if let Some((msg, time, col)) = &self.status_message {
+                            if time.elapsed().as_secs() < 10 {
+                                ui.colored_label(*col, msg);
+                            } else {
+                                ui.label(egui::RichText::new("Glissez-déposez n'importe quelle photo directement dans la fenêtre.").color(Color32::from_rgb(140, 145, 165)));
+                            }
                         } else {
                             ui.label(egui::RichText::new("Glissez-déposez n'importe quelle photo directement dans la fenêtre.").color(Color32::from_rgb(140, 145, 165)));
                         }
-                    } else {
-                        ui.label(egui::RichText::new("Glissez-déposez n'importe quelle photo directement dans la fenêtre.").color(Color32::from_rgb(140, 145, 165)));
-                    }
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(format!(
-                            "UltraHDR Studio v{} • Norme ISO 21496-1 • Adobe XMP (hdrgm) • CIPA DC-007 MPF",
-                            env!("CARGO_PKG_VERSION")
-                        )).size(11.0).color(Color32::from_rgb(110, 115, 135)));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(format!(
+                                "UltraHDR Studio v{} • Norme ISO 21496-1 • Adobe XMP (hdrgm) • CIPA DC-007 MPF",
+                                env!("CARGO_PKG_VERSION")
+                            )).size(11.0).color(Color32::from_rgb(110, 115, 135)));
+                        });
                     });
                 });
-            });
+        }
 
         // ── 3. Panneau Latéral Gauche (Source, Analyse, Profils HDR, Moteur) ──
         if !is_vertical && self.left_panel_visible {
@@ -1243,11 +1215,11 @@ impl eframe::App for UltraHdrApp {
 
         // ── 5. Panneau Inférieur (Deck de Commande Vertical ou Dock Bureau) ──
         if is_vertical {
+            let total_h = screen_rect.height();
+            let deck_h = (total_h * 0.40).clamp(200.0, 310.0);
             egui::TopBottomPanel::bottom("vertical_control_deck")
-                .min_height(220.0)
-                .default_height(300.0)
-                .max_height(450.0)
-                .resizable(true)
+                .exact_height(deck_h)
+                .resizable(false)
                 .frame(egui::Frame::none().fill(Color32::from_rgb(16, 18, 26)).inner_margin(egui::Margin::symmetric(8.0, 6.0)))
                 .show(ctx, |ui| {
                     self.ui_vertical_control_deck(ui, ctx);
@@ -2100,13 +2072,13 @@ impl UltraHdrApp {
         let avail_w = ui.available_width();
         if avail_w < 540.0 {
             // Disposition Smartphone Portrait Étroite (16:9, 18:9, 19.5:9, 20:9, 21:9) :
-            // Puces horizontales Material 3 en haut + Panneau pleine largeur en dessous
+            // 4 Onglets Material 3 en 1 SEULE ligne horizontale parfaitement répartie
             ui.vertical(|ui| {
-                ui.horizontal_wrapped(|ui| {
+                let tab_w = ((avail_w - 3.0 * 6.0) / 4.0).max(45.0);
+                ui.horizontal(|ui| {
                     for pane in panes {
                         let is_active = self.active_config_pane == pane;
-                        let label = format!("{} {}", pane.icon(), pane.title());
-                        if crate::theme_material::material_chip(ui, is_active, &label).clicked() {
+                        if crate::theme_material::material_tab(ui, is_active, pane.icon(), pane.title(), tab_w).clicked() {
                             self.active_config_pane = pane;
                         }
                     }
@@ -2254,35 +2226,23 @@ impl UltraHdrApp {
                                     }
                                 }
 
-                                ui.add_space(4.0);
-                                if ui.add(btn_compare).clicked() {
-                                    self.compare_toggled = !self.compare_toggled;
+                                ui.add_space(6.0);
+                                ui.separator();
+                                ui.add_space(6.0);
+
+                                if ui.button(egui::RichText::new("⛶").size(11.5)).clicked() {
+                                    self.zoom = 1.0;
+                                    self.pan = Vec2::ZERO;
+                                }
+                                if ui.button(egui::RichText::new("➖").size(10.5)).clicked() {
+                                    self.zoom = (self.zoom / 1.25).clamp(0.2, 8.0);
+                                }
+                                ui.label(egui::RichText::new(format!("{:.0}%", self.zoom * 100.0)).strong().size(11.0).color(Color32::from_rgb(138, 180, 248)));
+                                if ui.button(egui::RichText::new("➕").size(10.5)).clicked() {
+                                    self.zoom = (self.zoom * 1.25).clamp(0.2, 8.0);
                                 }
                             });
                         });
-
-                    // Ligne 2 dédiée aux contrôles d'échelle et zoom (+, -, 100%, Ajuster) sans AUCUNE superposition
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if ui.button(egui::RichText::new("⛶ Ajuster").size(13.0)).clicked() {
-                            self.zoom = 1.0;
-                            self.pan = Vec2::ZERO;
-                        }
-                        if ui.button(egui::RichText::new("1:1").size(13.0)).clicked() {
-                            self.zoom = 1.0;
-                            self.pan = Vec2::ZERO;
-                        }
-
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button(egui::RichText::new(" ➕ ").size(14.0)).clicked() {
-                                self.zoom = (self.zoom * 1.25).clamp(0.2, 8.0);
-                            }
-                            ui.label(egui::RichText::new(format!("{:.0}%", self.zoom * 100.0)).strong().size(13.0).color(Color32::from_rgb(138, 180, 248)));
-                            if ui.button(egui::RichText::new(" ➖ ").size(14.0)).clicked() {
-                                self.zoom = (self.zoom / 1.25).clamp(0.2, 8.0);
-                            }
-                        });
-                    });
                 } else {
                     // ── Mode Bureau / Tablette Large : 1 seule barre spacieuse ──
                     ui.horizontal(|ui| {
@@ -2475,9 +2435,12 @@ impl UltraHdrApp {
                         painter.circle_stroke(handle_pos, 14.0, Stroke::new(2.5f32, Color32::WHITE));
                         painter.text(handle_pos, egui::Align2::CENTER_CENTER, "◀▶", egui::FontId::proportional(10.0), Color32::WHITE);
 
-                        // Badges semi-transparents élégants
-                        draw_floating_badge(&painter, Pos2::new(img_rect.left() + 16.0, img_rect.top() + 16.0), "Avant : SDR Original", Color32::WHITE);
-                        draw_floating_badge(&painter, Pos2::new(img_rect.right() - 150.0, img_rect.top() + 16.0), "Après : Ultra HDR", Color32::from_rgb(0, 220, 255));
+                        // Badges semi-transparents élégants (compacts sur mobile pour ne jamais entrer en collision)
+                        let sdr_txt = if is_vertical { "SDR" } else { "Avant : SDR Original" };
+                        let hdr_txt = if is_vertical { "Ultra HDR" } else { "Après : Ultra HDR" };
+                        let r_offset = if is_vertical { 80.0 } else { 150.0 };
+                        draw_floating_badge(&painter, Pos2::new(img_rect.left() + 8.0, img_rect.top() + 8.0), sdr_txt, Color32::WHITE);
+                        draw_floating_badge(&painter, Pos2::new((img_rect.right() - r_offset).max(split_x + 8.0), img_rect.top() + 8.0), hdr_txt, Color32::from_rgb(0, 220, 255));
 
                         // Drag de la barre (désactivé si l'outil ciblé TAT est actif)
                         if !self.targeted_tool_active && response.dragged_by(egui::PointerButton::Primary) {
