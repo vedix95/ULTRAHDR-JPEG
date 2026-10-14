@@ -121,13 +121,19 @@ pub fn apply_material_3_theme(ctx: &Context, is_android: bool) -> ScreenFormFact
     let screen_size = screen_rect.size();
     let form_factor = ScreenFormFactor::detect(screen_size);
 
+    if is_android {
+        if ctx.zoom_factor() < 1.35 {
+            ctx.set_zoom_factor(1.35);
+        }
+    }
+
     let mut style = (*ctx.style()).clone();
 
     // 1. Typography Hierarchy with readable mobile sizes
     let font_scale = if is_android {
-        1.15_f32
+        1.25_f32
     } else if form_factor == ScreenFormFactor::SmartphonePortrait {
-        1.05_f32
+        1.10_f32
     } else {
         1.0_f32
     };
@@ -135,47 +141,47 @@ pub fn apply_material_3_theme(ctx: &Context, is_android: bool) -> ScreenFormFact
     style.text_styles = [
         (
             TextStyle::Heading,
-            FontId::new(20.0_f32 * font_scale, FontFamily::Proportional),
+            FontId::new(22.0_f32 * font_scale, FontFamily::Proportional),
         ),
         (
             TextStyle::Name("Title".into()),
-            FontId::new(17.0_f32 * font_scale, FontFamily::Proportional),
+            FontId::new(18.0_f32 * font_scale, FontFamily::Proportional),
         ),
         (
             TextStyle::Body,
-            FontId::new(14.5_f32 * font_scale, FontFamily::Proportional),
+            FontId::new(15.5_f32 * font_scale, FontFamily::Proportional),
         ),
         (
             TextStyle::Button,
-            FontId::new(14.0_f32 * font_scale, FontFamily::Proportional),
+            FontId::new(15.0_f32 * font_scale, FontFamily::Proportional),
         ),
         (
             TextStyle::Small,
-            FontId::new(12.0_f32 * font_scale, FontFamily::Proportional),
+            FontId::new(13.0_f32 * font_scale, FontFamily::Proportional),
         ),
         (
             TextStyle::Monospace,
-            FontId::new(12.5_f32 * font_scale, FontFamily::Monospace),
+            FontId::new(13.0_f32 * font_scale, FontFamily::Monospace),
         ),
     ]
     .into();
 
-    // 2. Material 3 Touch Targets & Spacing (>= 44-48dp touch heights)
+    // 2. Material 3 Touch Targets & Spacing (>= 48dp touch heights)
     let touch_padding_y = if is_android || form_factor == ScreenFormFactor::SmartphonePortrait {
-        10.0_f32
+        12.0_f32
     } else {
         7.0_f32
     };
 
-    style.spacing.button_padding = Vec2::new(14.0_f32, touch_padding_y);
-    style.spacing.item_spacing = Vec2::new(8.0_f32, 8.0_f32);
-    style.spacing.slider_width = 160.0_f32;
-    // Enhanced touch slider thumb
+    style.spacing.button_padding = Vec2::new(if is_android { 18.0 } else { 14.0 }, touch_padding_y);
+    style.spacing.item_spacing = Vec2::new(10.0_f32, 10.0_f32);
+    style.spacing.slider_width = if is_android { 200.0 } else { 160.0 };
+    // Enhanced touch slider thumb (>= 48dp)
     style.spacing.interact_size = Vec2::new(
-        44.0_f32,
-        if is_android { 44.0_f32 } else { 34.0_f32 },
+        48.0_f32,
+        if is_android { 48.0_f32 } else { 34.0_f32 },
     );
-    style.spacing.scroll.bar_width = 8.0_f32;
+    style.spacing.scroll.bar_width = if is_android { 10.0 } else { 8.0 };
 
     // 3. Material Design 3 Visuals & Dark Color Palette
     let mut visuals = Visuals::dark();

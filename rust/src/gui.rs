@@ -384,7 +384,25 @@ impl UltraHdrApp {
         self.setup_loaded_image(loaded, ctx);
     }
 
-    /// Déclenche l'ouverture de fichier selon la plateforme (rfd sur desktop, modal sur mobile).
+#[cfg(target_os = "android")]
+pub fn trigger_android_photo_picker() {
+    let ctx = ndk_context::android_context();
+    let vm_ptr = ctx.vm();
+    if vm_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        if let Ok(vm) = jni::JavaVM::from_raw(vm_ptr as *mut _) {
+            if let Ok(mut env) = vm.attach_current_thread() {
+                if let Ok(class) = env.find_class("com/ultrahdr/studio/MainActivity") {
+                    let _ = env.call_static_method(class, "openImagePicker", "()V", &[]);
+                }
+            }
+        }
+    }
+}
+
+    /// Déclenche l'ouverture de fichier selon la plateforme (rfd sur desktop, sélecteur photo Android + modal sur mobile).
     pub fn trigger_pick_file(&mut self, ctx: &egui::Context) {
         #[cfg(not(target_os = "android"))]
         {
@@ -397,6 +415,7 @@ impl UltraHdrApp {
         }
         #[cfg(target_os = "android")]
         {
+            Self::trigger_android_photo_picker();
             self.show_open_dialog = true;
         }
     }
@@ -770,6 +789,26 @@ impl eframe::App for UltraHdrApp {
             }
         }
 
+        // ── Importation automatique depuis la galerie Android (via MainActivity) ──
+        #[cfg(target_os = "android")]
+        {
+            let cache_dirs = [
+                PathBuf::from("/data/data/com.ultrahdr.studio/cache"),
+                PathBuf::from("/data/user/0/com.ultrahdr.studio/cache"),
+            ];
+            for c_dir in &cache_dirs {
+                let flag = c_dir.join("photo_ready.flag");
+                let photo = c_dir.join("imported_photo.jpg");
+                if flag.exists() && photo.exists() {
+                    let _ = std::fs::remove_file(&flag);
+                    self.load_file(&photo, ctx);
+                    self.show_open_dialog = false;
+                    self.set_status("Photo importée depuis la galerie Android !", Color32::from_rgb(118, 214, 213));
+                    break;
+                }
+            }
+        }
+
         // ── Détection de l'orientation et mode responsive multi-formats Android ──
         let is_android = cfg!(target_os = "android");
         let form_factor = crate::theme_material::apply_material_3_theme(ctx, is_android);
@@ -1007,13 +1046,28 @@ impl eframe::App for UltraHdrApp {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     ui.vertical_centered(|ui| {
+                        #[cfg(target_os = "android")]
+                        {
+                            let btn_picker = egui::Button::new(
+                                egui::RichText::new("📱 Ouvrir Galerie Photos & Fichiers").strong().size(15.0).color(Color32::WHITE),
+                            )
+                            .fill(Color32::from_rgb(0, 150, 136))
+                            .rounding(Rounding::same(24.0));
+
+                            if ui.add_sized([ui.available_width(), 48.0], btn_picker).clicked() {
+                                Self::trigger_android_photo_picker();
+                            }
+
+                            ui.add_space(8.0);
+                        }
+
                         let btn_demo = egui::Button::new(
-                            egui::RichText::new("🌅 Charger la Démo Ultra HDR").strong().size(14.0).color(Color32::WHITE),
+                            egui::RichText::new("🌅 Charger la Démo Ultra HDR (1000+ nits)").strong().size(14.0).color(Color32::WHITE),
                         )
                         .fill(Color32::from_rgb(0, 120, 212))
                         .rounding(Rounding::same(24.0));
 
-                        if ui.add_sized([ui.available_width(), 44.0], btn_demo).clicked() {
+                        if ui.add_sized([ui.available_width(), 48.0], btn_demo).clicked() {
                             self.load_demo_image(ctx);
                             self.show_open_dialog = false;
                         }
@@ -2124,114 +2178,160 @@ impl UltraHdrApp {
         // Barre d'outils de la visionneuse
         egui::Frame::none()
             .fill(Color32::from_rgb(18, 19, 26))
-            .inner_margin(egui::Margin::symmetric(if is_vertical { 6.0 } else { 12.0 }, 6.0))
+            .inner_margin(egui::Margin::symmetric(if is_vertical { 8.0 } else { 12.0 }, 6.0))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let mut mode_changed = false;
-                    let modes: &[(ViewerMode, &str)] = if is_vertical {
-                        &[
-                            (ViewerMode::Split, "↔ Split"),
-                            (ViewerMode::SideBySide, "◫ Côte"),
-                            (ViewerMode::FullHdr, "✨ HDR"),
-                            (ViewerMode::GainMap, "◐ Map"),
-                            (ViewerMode::Heatmap, "🔥 Nits"),
-                        ]
+                let mut mode_changed = false;
+                let modes: &[(ViewerMode, &str)] = if is_vertical {
+                    &[
+                        (ViewerMode::Split, "↔ Glissière"),
+                        (ViewerMode::SideBySide, "◫ Côte à côte"),
+                        (ViewerMode::FullHdr, "✨ Ultra HDR"),
+                        (ViewerMode::GainMap, "◐ Gain Map"),
+                        (ViewerMode::Heatmap, "🔥 Carte Nits"),
+                    ]
+                } else {
+                    &[
+                        (ViewerMode::Split, "↔ Glissière Avant / Après"),
+                        (ViewerMode::SideBySide, "◫ Côte à côte"),
+                        (ViewerMode::FullHdr, "✨ Vrai Ultra HDR Direct"),
+                        (ViewerMode::GainMap, "◐ Gain Map"),
+                        (ViewerMode::Heatmap, "🔥 Carte Nits"),
+                    ]
+                };
+
+                let is_compare_active = self.compare_toggled
+                    || ctx.input(|i| {
+                        i.key_down(egui::Key::Space)
+                            || i.key_down(egui::Key::Backslash)
+                            || i.key_down(egui::Key::Slash)
+                    });
+
+                let compare_label = if is_vertical { "👁 Original" } else { "👁 Original [Espace / \\]" };
+                let btn_compare = egui::Button::new(
+                    egui::RichText::new(compare_label)
+                        .size(if is_vertical { 13.0 } else { 12.0 })
+                        .color(if is_compare_active {
+                            Color32::BLACK
+                        } else {
+                            Color32::from_rgb(255, 215, 0)
+                        }),
+                )
+                .fill(if is_compare_active {
+                    Color32::from_rgb(255, 215, 0)
+                } else {
+                    Color32::from_rgb(34, 30, 20)
+                })
+                .stroke(Stroke::new(
+                    1.0f32,
+                    if is_compare_active {
+                        Color32::WHITE
                     } else {
-                        &[
-                            (ViewerMode::Split, "↔ Glissière Avant / Après"),
-                            (ViewerMode::SideBySide, "◫ Côte à côte"),
-                            (ViewerMode::FullHdr, "✨ Vrai Ultra HDR Direct"),
-                            (ViewerMode::GainMap, "◐ Gain Map"),
-                            (ViewerMode::Heatmap, "🔥 Carte Nits"),
-                        ]
-                    };
+                        Color32::from_rgb(180, 150, 40)
+                    },
+                ))
+                .rounding(Rounding::same(8.0));
 
-                    for &(m, label) in modes {
-                        let is_active = self.mode == m;
-                        let btn = egui::Button::new(
-                            egui::RichText::new(label).size(if is_vertical { 11.0 } else { 12.0 }).color(if is_active { Color32::WHITE } else { Color32::from_rgb(180, 185, 205) }),
-                        )
-                        .fill(if is_active { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(26, 29, 39) })
-                        .stroke(Stroke::new(1.0f32, if is_active { Color32::from_rgb(0, 180, 255) } else { Color32::from_rgb(45, 50, 68) }))
-                        .rounding(Rounding::same(6.0));
+                if is_vertical {
+                    // ── Mode Vertical / Mobile : Défilement horizontal des modes + barre de zoom séparée ──
+                    egui::ScrollArea::horizontal()
+                        .id_source("viewer_modes_scroll")
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for &(m, label) in modes {
+                                    let is_active = self.mode == m;
+                                    let btn = egui::Button::new(
+                                        egui::RichText::new(label)
+                                            .size(13.0)
+                                            .color(if is_active { Color32::WHITE } else { Color32::from_rgb(180, 185, 205) }),
+                                    )
+                                    .fill(if is_active { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(26, 29, 39) })
+                                    .stroke(Stroke::new(1.0f32, if is_active { Color32::from_rgb(0, 180, 255) } else { Color32::from_rgb(45, 50, 68) }))
+                                    .rounding(Rounding::same(8.0));
 
-                        if ui.add(btn).clicked() {
-                            self.mode = m;
-                            mode_changed = true;
-                        }
-                    }
+                                    if ui.add(btn).clicked() {
+                                        self.mode = m;
+                                        mode_changed = true;
+                                    }
+                                }
 
-                    if mode_changed {
-                        self.recompute_and_update_textures(ctx);
-                    }
-
-                    ui.add_space(if is_vertical { 4.0 } else { 8.0 });
-                    ui.separator();
-                    ui.add_space(if is_vertical { 4.0 } else { 8.0 });
-
-                    // Bouton de comparaison instantanée
-                    let is_compare_active = self.compare_toggled
-                        || ctx.input(|i| {
-                            i.key_down(egui::Key::Space)
-                                || i.key_down(egui::Key::Backslash)
-                                || i.key_down(egui::Key::Slash)
+                                ui.add_space(4.0);
+                                if ui.add(btn_compare).clicked() {
+                                    self.compare_toggled = !self.compare_toggled;
+                                }
+                            });
                         });
 
-                    let compare_label = if is_vertical { "👁 Orig" } else { "👁 Original [Espace / \\]" };
-                    let btn_compare = egui::Button::new(
-                        egui::RichText::new(compare_label)
-                            .size(if is_vertical { 11.0 } else { 12.0 })
-                            .color(if is_compare_active {
-                                Color32::BLACK
-                            } else {
-                                Color32::from_rgb(255, 215, 0)
-                            }),
-                    )
-                    .fill(if is_compare_active {
-                        Color32::from_rgb(255, 215, 0)
-                    } else {
-                        Color32::from_rgb(34, 30, 20)
-                    })
-                    .stroke(Stroke::new(
-                        1.0f32,
-                        if is_compare_active {
-                            Color32::WHITE
-                        } else {
-                            Color32::from_rgb(180, 150, 40)
-                        },
-                    ))
-                    .rounding(Rounding::same(6.0));
-
-                    if ui
-                        .add(btn_compare)
-                        .on_hover_text("Maintenez la touche Espace ou \\ (ou cliquez) pour afficher instantanément l'image SDR originale sans traitement.")
-                        .clicked()
-                    {
-                        self.compare_toggled = !self.compare_toggled;
-                    }
-
-                    // Contrôles de Zoom
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(egui::RichText::new("+").size(12.5)).clicked() {
-                            self.zoom = (self.zoom * 1.2).clamp(0.2, 8.0);
+                    // Ligne 2 dédiée aux contrôles d'échelle et zoom (+, -, 100%, Ajuster) sans AUCUNE superposition
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(egui::RichText::new("⛶ Ajuster").size(13.0)).clicked() {
+                            self.zoom = 1.0;
+                            self.pan = Vec2::ZERO;
                         }
-                        ui.label(egui::RichText::new(format!("{:.0}%", self.zoom * 100.0)).size(11.5).color(Color32::from_rgb(200, 205, 225)));
-                        if ui.button(egui::RichText::new("-").size(12.5)).clicked() {
-                            self.zoom = (self.zoom / 1.2).clamp(0.2, 8.0);
+                        if ui.button(egui::RichText::new("1:1").size(13.0)).clicked() {
+                            self.zoom = 1.0;
+                            self.pan = Vec2::ZERO;
                         }
-                        if !is_vertical {
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(egui::RichText::new(" ➕ ").size(14.0)).clicked() {
+                                self.zoom = (self.zoom * 1.25).clamp(0.2, 8.0);
+                            }
+                            ui.label(egui::RichText::new(format!("{:.0}%", self.zoom * 100.0)).strong().size(13.0).color(Color32::from_rgb(138, 180, 248)));
+                            if ui.button(egui::RichText::new(" ➖ ").size(14.0)).clicked() {
+                                self.zoom = (self.zoom / 1.25).clamp(0.2, 8.0);
+                            }
+                        });
+                    });
+                } else {
+                    // ── Mode Bureau / Tablette Large : 1 seule barre spacieuse ──
+                    ui.horizontal(|ui| {
+                        for &(m, label) in modes {
+                            let is_active = self.mode == m;
+                            let btn = egui::Button::new(
+                                egui::RichText::new(label).size(12.0).color(if is_active { Color32::WHITE } else { Color32::from_rgb(180, 185, 205) }),
+                            )
+                            .fill(if is_active { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(26, 29, 39) })
+                            .stroke(Stroke::new(1.0f32, if is_active { Color32::from_rgb(0, 180, 255) } else { Color32::from_rgb(45, 50, 68) }))
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add(btn).clicked() {
+                                self.mode = m;
+                                mode_changed = true;
+                            }
+                        }
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        if ui.add(btn_compare).clicked() {
+                            self.compare_toggled = !self.compare_toggled;
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(egui::RichText::new("+").size(12.5)).clicked() {
+                                self.zoom = (self.zoom * 1.2).clamp(0.2, 8.0);
+                            }
+                            ui.label(egui::RichText::new(format!("{:.0}%", self.zoom * 100.0)).size(11.5).color(Color32::from_rgb(200, 205, 225)));
+                            if ui.button(egui::RichText::new("-").size(12.5)).clicked() {
+                                self.zoom = (self.zoom / 1.2).clamp(0.2, 8.0);
+                            }
                             if ui.button("1:1").clicked() {
                                 self.zoom = 1.0;
                                 self.pan = Vec2::ZERO;
                             }
-                        }
-                        let fit_label = if is_vertical { "⛶" } else { "⛶ Ajuster" };
-                        if ui.button(fit_label).clicked() {
-                            self.zoom = 1.0;
-                            self.pan = Vec2::ZERO;
-                        }
+                            if ui.button("⛶ Ajuster").clicked() {
+                                self.zoom = 1.0;
+                                self.pan = Vec2::ZERO;
+                            }
+                        });
                     });
-                });
+                }
+
+                if mode_changed {
+                    self.recompute_and_update_textures(ctx);
+                }
             });
 
         if self.loaded_image.is_none() {
