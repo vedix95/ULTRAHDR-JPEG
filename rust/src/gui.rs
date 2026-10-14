@@ -12,9 +12,9 @@ use rayon::prelude::*;
 
 use crate::analyzer::{analyze_image_potential, get_preset_library, AnalysisResult, HDRPreset};
 use crate::engine::{
-    assemble_ultra_hdr_jpeg, compute_hdr_and_gain_map, compute_luminance_histogram,
-    encode_gain_map_jpeg, encode_rgb_jpeg, generate_nits_heatmap, simulate_hdr_on_sdr,
-    LuminanceHistogram, TonalParams, TonalZone,
+    adapt_hdr_nits_for_display, assemble_ultra_hdr_jpeg, compute_display_headroom_weight,
+    compute_hdr_and_gain_map, compute_luminance_histogram, encode_gain_map_jpeg, encode_rgb_jpeg,
+    generate_nits_heatmap, simulate_hdr_on_sdr, LuminanceHistogram, TonalParams, TonalZone,
 };
 use crate::loader::{load_image, LoadedImage};
 
@@ -27,13 +27,42 @@ pub enum ViewerMode {
     Heatmap,     // 🔥 Carte Nits
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigPane {
+    Tonal,       // 🎨 Tonalité Pro, Courbe, Saturation
+    Simulation,  // 🖥️ Simulation EDR & Tone-Mapping
+    Engine,      // 📁 Source & Profils HDR
+    Export,      // 💾 Export Ultra HDR & Traitement par lot
+}
+
+impl ConfigPane {
+    pub fn icon(&self) -> &'static str {
+        match self {
+            ConfigPane::Tonal => "🎨",
+            ConfigPane::Simulation => "🖥️",
+            ConfigPane::Engine => "📁",
+            ConfigPane::Export => "💾",
+        }
+    }
+
+    pub fn title(&self) -> &'static str {
+        match self {
+            ConfigPane::Tonal => "Tonalité",
+            ConfigPane::Simulation => "Rendu",
+            ConfigPane::Engine => "Profils",
+            ConfigPane::Export => "Export",
+        }
+    }
+}
+
 pub struct ProcessingParams {
     pub peak_nits: f32,
     pub sdr_white: f32,
     pub shadow_boost: f32,
     pub hi_gamma: f32,
     pub highlight_threshold: f32,
-    pub ev_shift: f32,
+    pub hdr_boost: f32,
+    pub highlight_rolloff: f32,
     pub tone_map_mode: String,
     // 🎨 Tonalité Pro (Style Photoshop / Lightroom)
     pub tonal_contrast: f32,   // -1.0 .. +1.0 (défaut 0.0)
@@ -54,7 +83,8 @@ impl Default for ProcessingParams {
             shadow_boost: 1.0,
             hi_gamma: 1.0,
             highlight_threshold: 0.50,
-            ev_shift: 0.0,
+            hdr_boost: 1.0,
+            highlight_rolloff: 0.75,
             tone_map_mode: "vivid".to_string(),
             tonal_contrast: 0.0,
             tonal_whites: 0.0,
@@ -113,11 +143,9 @@ pub struct UltraHdrApp {
     hovered_zone: Option<(TonalZone, f32)>,
     cached_histogram: Option<LuminanceHistogram>,
 
-    // État des accordéons du panneau latéral
+    // État des accordéons des panneaux latéraux
     card_proposal_open: bool,
-    card_simulation_open: bool,
     card_settings_open: bool,
-    card_export_open: bool,
 
     // Traitement par lot (Batch)
     show_batch_dialog: bool,
@@ -128,42 +156,62 @@ pub struct UltraHdrApp {
     // Détection matérielle HDR
     is_hdr_display_active: bool,
     display_info_str: String,
+    display_peak_nits: f32,
 
     // Barre d'état & Ergonomie
     status_message: Option<(String, Instant, Color32)>,
     open_path_input: String,
     show_open_dialog: bool,
     sidebar_visible: bool,
+    left_panel_visible: bool,
+    right_panel_visible: bool,
+    bottom_panel_visible: bool,
     compare_toggled: bool,
+    pub active_config_pane: ConfigPane,
 }
 
 impl UltraHdrApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // Détection de l'écran HDR (Windows DXGI ou Linux Wayland)
-        let (is_hdr, info_str) = detect_hdr_display();
+        let (is_hdr, info_str, peak_nits) = detect_hdr_display();
 
-        // ── Thème Sombre Moderne et Agréable (Obsidian / Google Cyan) ──
+        // ── Police Material Design (Google Roboto) ──
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "roboto_regular".to_owned(),
+            egui::FontData::from_static(include_bytes!("../assets/fonts/Roboto-Regular.ttf")),
+        );
+        fonts.font_data.insert(
+            "roboto_medium".to_owned(),
+            egui::FontData::from_static(include_bytes!("../assets/fonts/Roboto-Medium.ttf")),
+        );
+        if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+            family.insert(0, "roboto_regular".to_owned());
+        }
+        cc.egui_ctx.set_fonts(fonts);
+
+        // ── Thème Sombre Material Design 3 (M3 Dark Surface & Google Blue) ──
         let mut visuals = egui::Visuals::dark();
         visuals.override_text_color = Some(Color32::from_rgb(240, 243, 250));
-        visuals.panel_fill = Color32::from_rgb(18, 19, 26);
+        visuals.panel_fill = Color32::from_rgb(18, 20, 28);
         visuals.window_fill = Color32::from_rgb(24, 26, 36);
-        visuals.faint_bg_color = Color32::from_rgb(28, 31, 44);
-        visuals.extreme_bg_color = Color32::from_rgb(13, 14, 20);
+        visuals.faint_bg_color = Color32::from_rgb(28, 32, 44);
+        visuals.extreme_bg_color = Color32::from_rgb(12, 14, 20);
 
-        visuals.window_rounding = Rounding::same(10.0);
-        visuals.menu_rounding = Rounding::same(8.0);
+        visuals.window_rounding = Rounding::same(12.0);
+        visuals.menu_rounding = Rounding::same(10.0);
         visuals.widgets.noninteractive.rounding = Rounding::same(8.0);
-        visuals.widgets.inactive.rounding = Rounding::same(6.0);
-        visuals.widgets.hovered.rounding = Rounding::same(6.0);
-        visuals.widgets.active.rounding = Rounding::same(6.0);
-        visuals.widgets.open.rounding = Rounding::same(6.0);
+        visuals.widgets.inactive.rounding = Rounding::same(8.0);
+        visuals.widgets.hovered.rounding = Rounding::same(8.0);
+        visuals.widgets.active.rounding = Rounding::same(8.0);
+        visuals.widgets.open.rounding = Rounding::same(8.0);
 
-        visuals.widgets.inactive.bg_fill = Color32::from_rgb(30, 33, 46);
-        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0f32, Color32::from_rgb(48, 52, 72));
-        visuals.widgets.hovered.bg_fill = Color32::from_rgb(42, 47, 68);
-        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0f32, Color32::from_rgb(0, 190, 255));
-        visuals.widgets.active.bg_fill = Color32::from_rgb(0, 120, 212);
-        visuals.selection.bg_fill = Color32::from_rgb(0, 120, 212);
+        visuals.widgets.inactive.bg_fill = Color32::from_rgb(28, 32, 46);
+        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0f32, Color32::from_rgb(46, 52, 72));
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(38, 44, 64);
+        visuals.widgets.hovered.bg_stroke = Stroke::new(1.2f32, Color32::from_rgb(66, 165, 245));
+        visuals.widgets.active.bg_fill = Color32::from_rgb(25, 118, 210);
+        visuals.selection.bg_fill = Color32::from_rgb(25, 118, 210);
 
         cc.egui_ctx.set_visuals(visuals);
 
@@ -191,20 +239,23 @@ impl UltraHdrApp {
             hovered_zone: None,
             cached_histogram: None,
             card_proposal_open: true,
-            card_simulation_open: true,
             card_settings_open: true,
-            card_export_open: true,
             show_batch_dialog: false,
             batch_input_dir: String::new(),
             batch_output_dir: String::new(),
             batch_status_msg: None,
             is_hdr_display_active: is_hdr,
             display_info_str: info_str,
+            display_peak_nits: peak_nits,
             status_message: None,
             open_path_input: String::new(),
             show_open_dialog: false,
             sidebar_visible: true,
+            left_panel_visible: true,
+            right_panel_visible: true,
+            bottom_panel_visible: true,
             compare_toggled: false,
+            active_config_pane: ConfigPane::Tonal,
         }
     }
 
@@ -224,7 +275,8 @@ impl UltraHdrApp {
                 self.params.shadow_boost = rec.shadow_boost;
                 self.params.hi_gamma = rec.hi_gamma;
                 self.params.highlight_threshold = rec.highlight_threshold;
-                self.params.ev_shift = 0.0;
+                self.params.hdr_boost = 1.0;
+                self.params.highlight_rolloff = 0.75;
                 self.params.tone_map_mode = "vivid".to_string();
                 self.params.tonal_contrast = 0.0;
                 self.params.tonal_whites = 0.0;
@@ -318,10 +370,35 @@ impl UltraHdrApp {
         self.gain_max = res.gain_max;
         self.preview_multiplier = (res.gain_max.exp2() * 10.0).round() / 10.0;
 
+        // Adaptation proportionnelle ISO 21496-1 pour la prévisualisation écran:
+        // Si la cible d'export dépasse les capacités physiques de l'écran (ex: 10 000 nits sur écran 400 nits),
+        // on adapte proportionnellement la dynamique affichée pour éliminer tout cramage en prévisualisation,
+        // tandis que le fichier exporté conserve rigoureusement la pleine dynamique mathématique.
+        let sdr_source = res.sdr_processed.as_deref().unwrap_or(&preview.sdr_uint8);
+        let preview_hdr_nits = adapt_hdr_nits_for_display(
+            &res.hdr_nits,
+            &res.gain_log2,
+            sdr_source,
+            w,
+            h,
+            p.peak_nits,
+            self.display_peak_nits,
+            p.sdr_white,
+        );
+
         // 2. Ne régénérer QUE la texture du mode actif pour garantir 60 FPS constants
         match self.mode {
             ViewerMode::Split | ViewerMode::SideBySide | ViewerMode::FullHdr => {
-                let sim_u8 = simulate_hdr_on_sdr(&res.hdr_nits, w, h, p.sdr_white, p.ev_shift, &p.tone_map_mode);
+                let tone_mode = if self.is_hdr_display_active { "linear" } else { &p.tone_map_mode };
+                let sim_u8 = simulate_hdr_on_sdr(
+                    &preview_hdr_nits,
+                    w,
+                    h,
+                    p.sdr_white,
+                    p.hdr_boost,
+                    p.highlight_rolloff,
+                    tone_mode,
+                );
                 let color_img_hdr = egui::ColorImage::from_rgb([w as usize, h as usize], &sim_u8);
                 self.tex_hdr_preview = Some(ctx.load_texture("hdr_prev", color_img_hdr, egui::TextureOptions::LINEAR));
             }
@@ -338,7 +415,7 @@ impl UltraHdrApp {
                 self.tex_gain_map = Some(ctx.load_texture("gain_map", color_img_gm, egui::TextureOptions::LINEAR));
             }
             ViewerMode::Heatmap => {
-                let heat_u8 = generate_nits_heatmap(&res.hdr_nits, w, h, p.sdr_white, p.peak_nits);
+                let heat_u8 = generate_nits_heatmap(&preview_hdr_nits, w, h, p.sdr_white, p.peak_nits);
                 let color_img_heat = egui::ColorImage::from_rgb([w as usize, h as usize], &heat_u8);
                 self.tex_heatmap = Some(ctx.load_texture("heatmap", color_img_heat, egui::TextureOptions::LINEAR));
             }
@@ -551,7 +628,20 @@ impl eframe::App for UltraHdrApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // ── Raccourcis Clavier Ergonomiques ──
         if ctx.input(|i| i.key_pressed(egui::Key::Tab)) {
-            self.sidebar_visible = !self.sidebar_visible;
+            let any_open = self.left_panel_visible || self.right_panel_visible || self.bottom_panel_visible;
+            self.left_panel_visible = !any_open;
+            self.right_panel_visible = !any_open;
+            self.bottom_panel_visible = !any_open;
+            self.sidebar_visible = !any_open;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+            self.left_panel_visible = !self.left_panel_visible;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F2)) {
+            self.right_panel_visible = !self.right_panel_visible;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
+            self.bottom_panel_visible = !self.bottom_panel_visible;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
             let is_fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
@@ -596,117 +686,240 @@ impl eframe::App for UltraHdrApp {
             }
         }
 
-        // ── 1. Barre Supérieure (Header Élégant) ──
+        // ── Détection de l'orientation et mode responsive vertical / mobile ──
+        let screen_rect = ctx.screen_rect();
+        let is_vertical = screen_rect.width() < screen_rect.height() || screen_rect.width() < 880.0;
+
+        // ── 1. Barre Supérieure (Header Responsive Material Design) ──
         egui::TopBottomPanel::top("top_panel")
-            .frame(egui::Frame::none().fill(Color32::from_rgb(15, 16, 22)).inner_margin(egui::Margin::symmetric(14.0, 8.0)))
+            .frame(egui::Frame::none().fill(Color32::from_rgb(15, 17, 24)).inner_margin(egui::Margin::symmetric(if is_vertical { 8.0 } else { 14.0 }, 8.0)))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    // Logo de marque avec numéro de version officiel
+                if is_vertical {
+                    // En-tête compact optimisé mobile / écran vertical
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("✨").size(18.0));
-                        ui.label(egui::RichText::new("Ultra").size(17.0).strong().color(Color32::WHITE));
-                        ui.label(egui::RichText::new("HDR").size(17.0).strong().color(Color32::from_rgb(0, 200, 255)));
-                        ui.label(egui::RichText::new("Studio").size(17.0).color(Color32::from_rgb(180, 190, 210)));
-                        draw_pill(ui, &format!("v{}", env!("CARGO_PKG_VERSION")), Color32::from_rgb(0, 110, 220), Color32::WHITE);
-                    });
+                        ui.label(egui::RichText::new("✨").size(16.0));
+                        ui.label(egui::RichText::new("UltraHDR").size(15.0).strong().color(Color32::from_rgb(0, 200, 255)));
 
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-
-                    // Badge de statut matériel HDR physique interactif
-                    let (dot_char, badge_text, badge_color) = if self.is_hdr_display_active {
-                        ("●", &self.display_info_str, Color32::from_rgb(46, 204, 113))
-                    } else {
-                        ("○", &self.display_info_str, Color32::from_rgb(52, 152, 219))
-                    };
-
-                    let badge_btn = egui::Button::new(
-                        egui::RichText::new(format!("{} {}", dot_char, badge_text)).size(11.5).color(badge_color),
-                    )
-                    .fill(Color32::from_rgb(20, 23, 34))
-                    .stroke(Stroke::new(1.0f32, Color32::from_rgb(45, 52, 75)))
-                    .rounding(Rounding::same(12.0));
-
-                    if ui.add(badge_btn).on_hover_text("Cliquez pour basculer entre rendu direct et simulation HDR").clicked() {
-                        self.is_hdr_display_active = !self.is_hdr_display_active;
-                        self.params.tone_map_mode = if self.is_hdr_display_active {
-                            "vivid".to_string()
+                        let (badge_bg, badge_border, badge_text_col, badge_text, hover_tip) = if self.is_hdr_display_active {
+                            (
+                                Color32::from_rgb(14, 45, 26),
+                                Color32::from_rgb(34, 197, 94),
+                                Color32::from_rgb(220, 252, 231),
+                                "🟢 HDR",
+                                "Écran HDR matériel actif",
+                            )
                         } else {
-                            "natural".to_string()
+                            (
+                                Color32::from_rgb(20, 32, 52),
+                                Color32::from_rgb(56, 189, 248),
+                                Color32::from_rgb(224, 242, 254),
+                                "🖥️ SDR",
+                                "Écran SDR standard (simulation active)",
+                            )
                         };
-                        self.recompute_and_update_textures(ctx);
-                    }
 
-                    // Pills d'informations sur l'image chargée
-                    if let Some(img) = &self.loaded_image {
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(10.0);
+                        egui::Frame::none()
+                            .fill(badge_bg)
+                            .stroke(Stroke::new(1.0f32, badge_border))
+                            .rounding(Rounding::same(10.0))
+                            .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new(badge_text).size(11.0).strong().color(badge_text_col));
+                            })
+                            .response
+                            .on_hover_text(hover_tip);
 
-                        draw_pill(ui, &img.filename, Color32::from_rgb(0, 120, 212), Color32::WHITE);
-                        draw_pill(ui, &img.format_name, Color32::from_rgb(35, 40, 55), Color32::from_rgb(200, 210, 230));
-                        draw_pill(ui, &format!("{}×{}", img.width, img.height), Color32::from_rgb(35, 40, 55), Color32::from_rgb(200, 210, 230));
-                        draw_pill(
-                            ui,
-                            &format!("+{} IL Boost", (self.gain_max * 10.0).round() / 10.0),
-                            Color32::from_rgb(60, 45, 15),
-                            Color32::from_rgb(255, 195, 40),
-                        );
-                    }
-
-                    // Boutons d'actions à droite
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Bascule visibilité du panneau latéral [Tab]
-                        let sidebar_label = if self.sidebar_visible { "⮹ Panneau [Tab]" } else { "⮹ Afficher [Tab]" };
-                        let btn_sidebar = egui::Button::new(
-                            egui::RichText::new(sidebar_label).size(12.0).color(Color32::from_rgb(170, 180, 205)),
-                        )
-                        .fill(Color32::from_rgb(26, 29, 40))
-                        .rounding(Rounding::same(6.0));
-
-                        if ui.add(btn_sidebar).clicked() {
-                            self.sidebar_visible = !self.sidebar_visible;
+                        if let Some(img) = &self.loaded_image {
+                            let display_name = if img.filename.len() > 16 {
+                                format!("{}...", &img.filename[..13])
+                            } else {
+                                img.filename.clone()
+                            };
+                            draw_pill(ui, &display_name, Color32::from_rgb(0, 120, 212), Color32::WHITE);
                         }
 
-                        // Bouton Traitement par lot
-                        let btn_batch = egui::Button::new(
-                            egui::RichText::new("⚡ Traitement par lot...").size(12.0).color(Color32::from_rgb(210, 220, 240)),
-                        )
-                        .fill(Color32::from_rgb(32, 36, 50))
-                        .rounding(Rounding::same(6.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let export_enabled = self.loaded_image.is_some();
+                            let btn_export = egui::Button::new(
+                                egui::RichText::new("💾").strong().color(Color32::WHITE).size(13.0),
+                            )
+                            .fill(if export_enabled { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(40, 45, 55) })
+                            .rounding(Rounding::same(6.0));
 
-                        if ui.add(btn_batch).on_hover_text("Convertit en masse tout un répertoire en JPEG Ultra HDR.").clicked() {
-                            self.show_batch_dialog = true;
-                        }
-
-                        let export_enabled = self.loaded_image.is_some();
-                        let btn_export = egui::Button::new(
-                            egui::RichText::new("💾 Exporter JPEG Ultra HDR").strong().color(Color32::WHITE).size(13.0),
-                        )
-                        .fill(if export_enabled { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(40, 45, 55) })
-                        .rounding(Rounding::same(6.0));
-
-                        if ui.add_enabled(export_enabled, btn_export).clicked() {
-                            self.export_ultrahdr();
-                        }
-
-                        let btn_open = egui::Button::new(
-                            egui::RichText::new("📂 Ouvrir une image").color(Color32::WHITE).size(13.0),
-                        )
-                        .fill(Color32::from_rgb(35, 40, 55))
-                        .rounding(Rounding::same(6.0));
-
-                        if ui.add(btn_open).clicked() {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Images (*.jpg, *.png, *.webp, *.hdr, *.exr, *.tif)", &["jpg", "jpeg", "png", "webp", "hdr", "exr", "tif", "tiff", "bmp"])
-                                .pick_file()
-                            {
-                                self.load_file(&path, ctx);
+                            if ui.add_enabled(export_enabled, btn_export).on_hover_text("Exporter JPEG Ultra HDR").clicked() {
+                                self.export_ultrahdr();
                             }
-                        }
+
+                            let btn_open = egui::Button::new(
+                                egui::RichText::new("📂").color(Color32::WHITE).size(13.0),
+                            )
+                            .fill(Color32::from_rgb(35, 40, 55))
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add(btn_open).on_hover_text("Ouvrir une image...").clicked() {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("Images (*.jpg, *.png, *.webp, *.hdr, *.exr, *.tif)", &["jpg", "jpeg", "png", "webp", "hdr", "exr", "tif", "tiff", "bmp"])
+                                    .pick_file()
+                                {
+                                    self.load_file(&path, ctx);
+                                }
+                            }
+
+                            let btn_batch = egui::Button::new(
+                                egui::RichText::new("⚡").size(12.0).color(Color32::from_rgb(210, 220, 240)),
+                            )
+                            .fill(Color32::from_rgb(32, 36, 50))
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add(btn_batch).on_hover_text("Traitement par lot...").clicked() {
+                                self.show_batch_dialog = true;
+                            }
+                        });
                     });
-                });
+                } else {
+                    // En-tête standard bureau étendu
+                    ui.horizontal(|ui| {
+                        // Logo de marque avec numéro de version officiel
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("✨").size(18.0));
+                            ui.label(egui::RichText::new("Ultra").size(17.0).strong().color(Color32::WHITE));
+                            ui.label(egui::RichText::new("HDR").size(17.0).strong().color(Color32::from_rgb(0, 200, 255)));
+                            ui.label(egui::RichText::new("Studio").size(17.0).color(Color32::from_rgb(180, 190, 210)));
+                            draw_pill(ui, &format!("v{}", env!("CARGO_PKG_VERSION")), Color32::from_rgb(0, 110, 220), Color32::WHITE);
+                        });
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        // Badge d'état matériel physique fixe (indicateur d'état système non commutable par clic)
+                        let (badge_bg, badge_border, badge_text_col, badge_text, hover_tip) = if self.is_hdr_display_active {
+                            (
+                                Color32::from_rgb(14, 45, 26),
+                                Color32::from_rgb(34, 197, 94),
+                                Color32::from_rgb(220, 252, 231),
+                                format!("🟢 ÉCRAN HDR ACTIF • {} (Pic {:.0} nits)", self.display_info_str, self.display_peak_nits),
+                                "Écran HDR matériel détecté et actif dans Windows (DirectX scRGB). Rendu physique direct.",
+                            )
+                        } else {
+                            (
+                                Color32::from_rgb(20, 32, 52),
+                                Color32::from_rgb(56, 189, 248),
+                                Color32::from_rgb(224, 242, 254),
+                                format!("🖥️ ÉCRAN SDR DÉTECTÉ • {} (Capacité {:.0} nits)", self.display_info_str, self.display_peak_nits),
+                                "Écran SDR standard détecté (ou HDR désactivé dans Windows). La simulation et le tonemapping sont actifs.",
+                            )
+                        };
+
+                        egui::Frame::none()
+                            .fill(badge_bg)
+                            .stroke(Stroke::new(1.0f32, badge_border))
+                            .rounding(Rounding::same(14.0))
+                            .inner_margin(egui::Margin::symmetric(12.0, 5.0))
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new(badge_text).size(12.0).strong().color(badge_text_col));
+                            })
+                            .response
+                            .on_hover_text(hover_tip);
+
+                        // Pills d'informations sur l'image chargée
+                        if let Some(img) = &self.loaded_image {
+                            ui.add_space(10.0);
+                            ui.separator();
+                            ui.add_space(10.0);
+
+                            draw_pill(ui, &img.filename, Color32::from_rgb(0, 120, 212), Color32::WHITE);
+                            draw_pill(ui, &img.format_name, Color32::from_rgb(35, 40, 55), Color32::from_rgb(200, 210, 230));
+                            draw_pill(ui, &format!("{}×{}", img.width, img.height), Color32::from_rgb(35, 40, 55), Color32::from_rgb(200, 210, 230));
+                            draw_pill(
+                                ui,
+                                &format!("+{} IL Boost", (self.gain_max * 10.0).round() / 10.0),
+                                Color32::from_rgb(60, 45, 15),
+                                Color32::from_rgb(255, 195, 40),
+                            );
+                        }
+
+                        // Boutons d'actions et bascules de panneaux à droite
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Bascule Panneau Droit [F2]
+                            let btn_right = egui::Button::new(
+                                egui::RichText::new("◨ Tonalité [F2]").size(11.5).color(if self.right_panel_visible { Color32::WHITE } else { Color32::from_rgb(140, 150, 175) }),
+                            )
+                            .fill(if self.right_panel_visible { Color32::from_rgb(30, 42, 65) } else { Color32::from_rgb(20, 22, 30) })
+                            .stroke(Stroke::new(1.0f32, if self.right_panel_visible { Color32::from_rgb(0, 180, 255) } else { Color32::from_rgb(40, 45, 60) }))
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add(btn_right).on_hover_text("Afficher/Masquer le panneau droit : Tonalité Pro, Courbe, Vibrance [F2]").clicked() {
+                                self.right_panel_visible = !self.right_panel_visible;
+                            }
+
+                            // Bascule Dock Inférieur [F3]
+                            let btn_bottom = egui::Button::new(
+                                egui::RichText::new("⬓ Export & Simu [F3]").size(11.5).color(if self.bottom_panel_visible { Color32::WHITE } else { Color32::from_rgb(140, 150, 175) }),
+                            )
+                            .fill(if self.bottom_panel_visible { Color32::from_rgb(30, 42, 65) } else { Color32::from_rgb(20, 22, 30) })
+                            .stroke(Stroke::new(1.0f32, if self.bottom_panel_visible { Color32::from_rgb(0, 180, 255) } else { Color32::from_rgb(40, 45, 60) }))
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add(btn_bottom).on_hover_text("Afficher/Masquer le panneau inférieur : Simulation SDR, Tone-Mapping, Export [F3]").clicked() {
+                                self.bottom_panel_visible = !self.bottom_panel_visible;
+                            }
+
+                            // Bascule Panneau Gauche [F1]
+                            let btn_left = egui::Button::new(
+                                egui::RichText::new("◧ Source & Profils [F1]").size(11.5).color(if self.left_panel_visible { Color32::WHITE } else { Color32::from_rgb(140, 150, 175) }),
+                            )
+                            .fill(if self.left_panel_visible { Color32::from_rgb(30, 42, 65) } else { Color32::from_rgb(20, 22, 30) })
+                            .stroke(Stroke::new(1.0f32, if self.left_panel_visible { Color32::from_rgb(0, 180, 255) } else { Color32::from_rgb(40, 45, 60) }))
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add(btn_left).on_hover_text("Afficher/Masquer le panneau gauche : Analyse, Profils HDR, Moteur [F1]").clicked() {
+                                self.left_panel_visible = !self.left_panel_visible;
+                            }
+
+                            ui.add_space(4.0);
+                            ui.separator();
+                            ui.add_space(4.0);
+
+                            // Bouton Traitement par lot
+                            let btn_batch = egui::Button::new(
+                                egui::RichText::new("⚡ Lot...").size(12.0).color(Color32::from_rgb(210, 220, 240)),
+                            )
+                            .fill(Color32::from_rgb(32, 36, 50))
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add(btn_batch).on_hover_text("Convertit en masse tout un répertoire en JPEG Ultra HDR.").clicked() {
+                                self.show_batch_dialog = true;
+                            }
+
+                            let export_enabled = self.loaded_image.is_some();
+                            let btn_export = egui::Button::new(
+                                egui::RichText::new("💾 Exporter").strong().color(Color32::WHITE).size(13.0),
+                            )
+                            .fill(if export_enabled { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(40, 45, 55) })
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add_enabled(export_enabled, btn_export).clicked() {
+                                self.export_ultrahdr();
+                            }
+
+                            let btn_open = egui::Button::new(
+                                egui::RichText::new("📂 Ouvrir").color(Color32::WHITE).size(13.0),
+                            )
+                            .fill(Color32::from_rgb(35, 40, 55))
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add(btn_open).clicked() {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("Images (*.jpg, *.png, *.webp, *.hdr, *.exr, *.tif)", &["jpg", "jpeg", "png", "webp", "hdr", "exr", "tif", "tiff", "bmp"])
+                                    .pick_file()
+                                {
+                                    self.load_file(&path, ctx);
+                                }
+                            }
+                        });
+                    });
+                }
             });
 
         // Boîte de dialogue chemin manuel si nécessaire
@@ -784,7 +997,7 @@ impl eframe::App for UltraHdrApp {
         }
 
         // ── 2. Barre d'État Inférieure (Footer) ──
-        egui::TopBottomPanel::bottom("bottom_panel")
+        egui::TopBottomPanel::bottom("bottom_status_bar")
             .frame(egui::Frame::none().fill(Color32::from_rgb(14, 15, 20)).inner_margin(egui::Margin::symmetric(14.0, 5.0)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -807,53 +1020,80 @@ impl eframe::App for UltraHdrApp {
                 });
             });
 
-        // ── 3. Panneau Latéral de Contrôle (Droite) ──
-        if self.sidebar_visible {
-            egui::SidePanel::right("controls_panel")
-                .min_width(340.0)
-                .default_width(375.0)
-                .frame(egui::Frame::none().fill(Color32::from_rgb(18, 19, 26)).inner_margin(egui::Margin::symmetric(10.0, 8.0)))
+        // ── 3. Panneau Latéral Gauche (Source, Analyse, Profils HDR, Moteur) ──
+        if !is_vertical && self.left_panel_visible {
+            egui::SidePanel::left("left_panel")
+                .min_width(280.0)
+                .default_width(315.0)
+                .max_width(380.0)
+                .frame(egui::Frame::none().fill(Color32::from_rgb(18, 20, 28)).inner_margin(egui::Margin::symmetric(10.0, 8.0)))
                 .show(ctx, |ui| {
-                    // En-tête du panneau latéral avec boutons Tout déplier / Tout replier
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Panneau d'Édition").strong().size(14.0).color(Color32::WHITE));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.link(egui::RichText::new("Tout replier").size(11.5).color(Color32::from_rgb(140, 150, 175))).clicked() {
-                                self.card_proposal_open = false;
-                                self.card_tonal_open = false;
-                                self.card_simulation_open = false;
-                                self.card_settings_open = false;
-                                self.card_export_open = false;
-                            }
-                            ui.label(egui::RichText::new("•").size(11.0).color(Color32::from_rgb(80, 85, 105)));
-                            if ui.link(egui::RichText::new("Tout déplier").size(11.5).color(Color32::from_rgb(140, 150, 175))).clicked() {
-                                self.card_proposal_open = true;
-                                self.card_tonal_open = true;
-                                self.card_simulation_open = true;
-                                self.card_settings_open = true;
-                                self.card_export_open = true;
-                            }
-                        });
-                    });
-                    ui.add_space(6.0);
-
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                        self.ui_sidebar_controls(ui, ctx);
+                        self.ui_left_panel(ui, ctx);
                     });
                 });
         }
 
-        // ── 4. Panneau Central (Visionneuse d'Image) ──
+        // ── 4. Panneau Latéral Droit (Tonalité Pro, Courbe, Vibrance/Saturation) ──
+        if !is_vertical && self.right_panel_visible {
+            egui::SidePanel::right("right_panel")
+                .min_width(290.0)
+                .default_width(325.0)
+                .max_width(400.0)
+                .frame(egui::Frame::none().fill(Color32::from_rgb(18, 20, 28)).inner_margin(egui::Margin::symmetric(10.0, 8.0)))
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        self.ui_right_panel(ui, ctx);
+                    });
+                });
+        }
+
+        // ── 5. Panneau Inférieur (Deck de Commande Vertical ou Dock Bureau) ──
+        if is_vertical {
+            egui::TopBottomPanel::bottom("vertical_control_deck")
+                .min_height(220.0)
+                .default_height(300.0)
+                .max_height(450.0)
+                .resizable(true)
+                .frame(egui::Frame::none().fill(Color32::from_rgb(16, 18, 26)).inner_margin(egui::Margin::symmetric(8.0, 6.0)))
+                .show(ctx, |ui| {
+                    self.ui_vertical_control_deck(ui, ctx);
+                });
+        } else if self.bottom_panel_visible {
+            egui::TopBottomPanel::bottom("bottom_dock")
+                .min_height(148.0)
+                .max_height(185.0)
+                .frame(egui::Frame::none().fill(Color32::from_rgb(16, 18, 26)).inner_margin(egui::Margin::symmetric(14.0, 10.0)))
+                .show(ctx, |ui| {
+                    self.ui_bottom_dock(ui, ctx);
+                });
+        }
+
+        // ── 6. Panneau Central (Visionneuse d'Image Haute Performance) ──
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(Color32::from_rgb(12, 13, 17)))
+            .frame(egui::Frame::none().fill(Color32::from_rgb(12, 13, 18)))
             .show(ctx, |ui| {
-                self.ui_center_viewport(ui, ctx);
+                self.ui_center_viewport(ui, ctx, is_vertical);
             });
     }
 }
 
 impl UltraHdrApp {
-    fn ui_sidebar_controls(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn ui_left_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // En-tête du panneau gauche
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("📁 Source & Profils").strong().size(13.5).color(Color32::WHITE));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.link(egui::RichText::new("⮜ Masquer [F1]").size(11.0).color(Color32::from_rgb(140, 150, 175))).clicked() {
+                    self.left_panel_visible = false;
+                }
+            });
+        });
+        ui.add_space(4.0);
+        self.ui_panel_engine_content(ui, ctx, false);
+    }
+
+    fn ui_panel_engine_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_vertical: bool) {
         let mut params_changed = false;
         let mut preset_to_apply = None;
 
@@ -863,7 +1103,7 @@ impl UltraHdrApp {
             .rounding(Rounding::same(8.0))
             .inner_margin(egui::Margin::symmetric(12.0, 10.0));
 
-        // ── 1. CARTE : 💡 Proposition Automatique ──
+        // ── 1. CARTE : 💡 Proposition Automatique & Analyse ──
         let proposal_score = self.analysis.as_ref().map(|a| a.potential_score).unwrap_or(0);
         let badge_text = if self.analysis.is_some() { format!("{}%", proposal_score) } else { "--%".to_string() };
 
@@ -872,7 +1112,7 @@ impl UltraHdrApp {
             let header_resp = ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(chevron).size(13.0).color(Color32::from_rgb(150, 155, 175)));
                 ui.label(egui::RichText::new("💡").size(14.0));
-                ui.label(egui::RichText::new("Proposition Automatique").strong().size(13.5).color(Color32::WHITE));
+                ui.label(egui::RichText::new("Proposition Automatique").strong().size(13.0).color(Color32::WHITE));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     draw_pill(ui, &badge_text, Color32::from_rgb(30, 35, 48), Color32::from_rgb(46, 204, 113));
                 });
@@ -883,20 +1123,26 @@ impl UltraHdrApp {
             }
 
             if self.card_proposal_open {
-                ui.add_space(8.0);
+                ui.add_space(6.0);
                 ui.separator();
-                ui.add_space(8.0);
+                ui.add_space(6.0);
 
                 if let Some(analysis) = &self.analysis {
-                    ui.label(egui::RichText::new(&analysis.category_title).strong().size(13.5).color(Color32::from_rgb(0, 200, 255)));
+                    ui.label(egui::RichText::new(&analysis.category_title).strong().size(13.0).color(Color32::from_rgb(0, 200, 255)));
                     ui.label(egui::RichText::new(&analysis.explanation).small().color(Color32::from_rgb(180, 185, 200)));
 
                     ui.add_space(6.0);
-                    // Grille de métadonnées
-                    ui.horizontal(|ui| {
+                    // Grille de métadonnées (verticale si écran portrait)
+                    if is_vertical {
                         draw_meta_box(ui, "Hautes Lumières", &format!("{:.1}%", analysis.highlight_ratio_pct));
+                        ui.add_space(3.0);
                         draw_meta_box(ui, "Contraste", &format!("{:.0}:1", analysis.contrast_ratio));
-                    });
+                    } else {
+                        ui.horizontal(|ui| {
+                            draw_meta_box(ui, "Hautes Lumières", &format!("{:.1}%", analysis.highlight_ratio_pct));
+                            draw_meta_box(ui, "Contraste", &format!("{:.0}:1", analysis.contrast_ratio));
+                        });
+                    }
 
                     ui.add_space(8.0);
                     let btn_apply = egui::Button::new(
@@ -909,8 +1155,8 @@ impl UltraHdrApp {
                         preset_to_apply = Some(analysis.recommended_preset.clone());
                     }
 
-                    ui.add_space(10.0);
-                    ui.label(egui::RichText::new("Profils prédéfinis :").size(12.0).color(Color32::from_rgb(160, 165, 180)));
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Profils prédéfinis :").size(11.5).color(Color32::from_rgb(160, 165, 180)));
 
                     // Boutons sélecteurs de profils
                     for preset in get_preset_library() {
@@ -918,13 +1164,13 @@ impl UltraHdrApp {
                             && (self.params.highlight_threshold - preset.highlight_threshold).abs() < 0.02;
 
                         let btn = egui::Button::new(
-                            egui::RichText::new(&preset.label).size(12.0).color(if is_cur { Color32::WHITE } else { Color32::from_rgb(190, 195, 215) }),
+                            egui::RichText::new(&preset.label).size(11.5).color(if is_cur { Color32::WHITE } else { Color32::from_rgb(190, 195, 215) }),
                         )
                         .fill(if is_cur { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(26, 29, 39) })
                         .stroke(Stroke::new(1.0f32, if is_cur { Color32::from_rgb(0, 180, 255) } else { Color32::from_rgb(45, 50, 68) }))
                         .rounding(Rounding::same(5.0));
 
-                        if ui.add_sized([ui.available_width(), 25.0], btn).on_hover_text(&preset.description).clicked() {
+                        if ui.add_sized([ui.available_width(), 24.0], btn).on_hover_text(&preset.description).clicked() {
                             preset_to_apply = Some(preset);
                         }
                         ui.add_space(2.0);
@@ -942,13 +1188,137 @@ impl UltraHdrApp {
             params_changed = true;
         }
 
-        // ── 2. CARTE : 🎨 Tonalité Pro (Style Lightroom) ──
+        // ── 2. CARTE : ⚙️ Réglages Moteur Ultra HDR ──
+        card_frame.show(ui, |ui| {
+            let chevron = if self.card_settings_open { "▾" } else { "▸" };
+            let header_resp = ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(chevron).size(13.0).color(Color32::from_rgb(150, 155, 175)));
+                ui.label(egui::RichText::new("⚙️").size(14.0));
+                ui.label(egui::RichText::new("Moteur Ultra HDR").strong().size(13.0).color(Color32::WHITE));
+            });
+
+            if header_resp.response.interact(egui::Sense::click()).clicked() {
+                self.card_settings_open = !self.card_settings_open;
+            }
+
+            if self.card_settings_open {
+                ui.spacing_mut().slider_width = (ui.available_width() - 4.0).max(180.0);
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                // Peak Nits
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Luminance Crête :").size(12.0).color(Color32::WHITE));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        draw_val_pill(ui, &format!("{:.0} nits", self.params.peak_nits));
+                    });
+                });
+                if ui.add(egui::Slider::new(&mut self.params.peak_nits, 200.0..=10000.0).step_by(50.0).show_value(false)).changed() {
+                    params_changed = true;
+                }
+
+                ui.add_space(6.0);
+
+                // Gamma
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Courbe Boost (Gamma) :").size(12.0).color(Color32::WHITE));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        draw_val_pill(ui, &format!("{:.2}", self.params.hi_gamma));
+                    });
+                });
+                if ui.add(egui::Slider::new(&mut self.params.hi_gamma, 0.10..=4.00).step_by(0.05).show_value(false)).changed() {
+                    params_changed = true;
+                }
+
+                ui.add_space(6.0);
+
+                // Préservation Ombres
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Préservation Ombres :").size(12.0).color(Color32::WHITE));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        draw_val_pill(ui, &format!("{:.2}×", self.params.shadow_boost));
+                    });
+                });
+                if ui.add(egui::Slider::new(&mut self.params.shadow_boost, 0.50..=4.00).step_by(0.02).show_value(false)).changed() {
+                    params_changed = true;
+                }
+
+                ui.add_space(6.0);
+
+                // Seuil Hautes Lumières
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Seuil d'Élévation :").size(12.0).color(Color32::WHITE));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        draw_val_pill(ui, &format!("{:.2}", self.params.highlight_threshold));
+                    });
+                });
+                if ui.add(egui::Slider::new(&mut self.params.highlight_threshold, 0.00..=0.98).step_by(0.02).show_value(false)).changed() {
+                    params_changed = true;
+                }
+
+                ui.add_space(8.0);
+
+                // Boîte de statistiques
+                egui::Frame::none()
+                    .fill(Color32::from_rgb(16, 17, 24))
+                    .stroke(Stroke::new(1.0f32, Color32::from_rgb(45, 50, 70)))
+                    .rounding(Rounding::same(6.0))
+                    .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.columns(3, |cols| {
+                            cols[0].vertical_centered(|ui| {
+                                ui.label(egui::RichText::new("Gain Min").size(10.0).color(Color32::GRAY));
+                                ui.label(egui::RichText::new(format!("{:.2} IL", self.gain_min)).strong().size(12.0).color(Color32::WHITE));
+                            });
+                            cols[1].vertical_centered(|ui| {
+                                ui.label(egui::RichText::new("Gain Max").size(10.0).color(Color32::GRAY));
+                                ui.label(egui::RichText::new(format!("+{:.2} IL", self.gain_max)).strong().size(12.0).color(Color32::from_rgb(0, 200, 255)));
+                            });
+                            cols[2].vertical_centered(|ui| {
+                                ui.label(egui::RichText::new("Multiplicateur").size(10.0).color(Color32::GRAY));
+                                ui.label(egui::RichText::new(format!("{:.1}×", self.preview_multiplier)).strong().size(12.0).color(Color32::from_rgb(255, 195, 40)));
+                            });
+                        });
+                    });
+            }
+        });
+
+        if params_changed {
+            self.recompute_and_update_textures(ctx);
+        }
+    }
+
+    fn ui_right_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // En-tête du panneau droit
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("🎨 Tonalité Pro & Couleur").strong().size(13.5).color(Color32::WHITE));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.link(egui::RichText::new("Masquer ⮞ [F2]").size(11.0).color(Color32::from_rgb(140, 150, 175))).clicked() {
+                    self.right_panel_visible = false;
+                }
+            });
+        });
+        ui.add_space(4.0);
+        self.ui_panel_tonal_content(ui, ctx, false);
+    }
+
+    fn ui_panel_tonal_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, _is_vertical: bool) {
+        let mut params_changed = false;
+
+        let card_frame = egui::Frame::none()
+            .fill(Color32::from_rgb(22, 24, 33))
+            .stroke(Stroke::new(1.0f32, Color32::from_rgb(42, 46, 64)))
+            .rounding(Rounding::same(8.0))
+            .inner_margin(egui::Margin::symmetric(12.0, 10.0));
+
+        // ── 1. CARTE : 🎨 Tonalité Pro (Lightroom) ──
         card_frame.show(ui, |ui| {
             let chevron = if self.card_tonal_open { "▾" } else { "▸" };
             let header_resp = ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(chevron).size(13.0).color(Color32::from_rgb(150, 155, 175)));
                 ui.label(egui::RichText::new("🎨").size(14.0));
-                ui.label(egui::RichText::new("Tonalité Pro (Lightroom)").strong().size(13.5).color(Color32::WHITE));
+                ui.label(egui::RichText::new("Tonalité (Courbe S-Curve)").strong().size(13.0).color(Color32::WHITE));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some((zone, _lum)) = self.hovered_zone {
                         draw_pill(ui, zone.name_fr(), Color32::from_rgb(0, 120, 212), Color32::WHITE);
@@ -963,37 +1333,37 @@ impl UltraHdrApp {
             }
 
             if self.card_tonal_open {
-                ui.spacing_mut().slider_width = (ui.available_width() - 4.0).max(260.0);
-                ui.add_space(8.0);
+                ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(120.0);
+                ui.add_space(6.0);
                 ui.separator();
-                ui.add_space(8.0);
+                ui.add_space(6.0);
 
-                // 🎯 Bouton Outil Ciblé Direct (Lightroom TAT)
+                // 🎯 Bouton Outil Ciblé Direct (TAT)
                 let tat_active = self.targeted_tool_active;
                 let tat_btn = egui::Button::new(
                     egui::RichText::new(if tat_active {
-                        "🎯 Outil Ciblé ACTIF — Cliquez/Glissez sur l'image [T]"
+                        "🎯 Outil Ciblé ACTIF [T]"
                     } else {
-                        "🎯 Ajuster sur l'image (Outil Ciblé) [T]"
+                        "🎯 Ajuster sur l'image [T]"
                     })
                     .strong()
-                    .size(12.5)
+                    .size(12.0)
                     .color(if tat_active { Color32::BLACK } else { Color32::WHITE }),
                 )
                 .fill(if tat_active { Color32::from_rgb(0, 220, 255) } else { Color32::from_rgb(30, 36, 52) })
                 .stroke(Stroke::new(1.0f32, if tat_active { Color32::WHITE } else { Color32::from_rgb(0, 180, 255) }))
                 .rounding(Rounding::same(6.0));
 
-                if ui.add_sized([ui.available_width(), 32.0], tat_btn).on_hover_text("Active l'ajustement direct sur l'image : survolez et glissez verticalement pour moduler Noirs, Ombres, Hautes Lumières ou Blancs.").clicked() {
+                if ui.add_sized([ui.available_width(), 30.0], tat_btn).on_hover_text("Active l'ajustement direct : survolez et glissez verticalement pour moduler Noirs, Ombres, Hautes Lumières ou Blancs.").clicked() {
                     self.targeted_tool_active = !self.targeted_tool_active;
                     if !self.targeted_tool_active {
                         self.hovered_zone = None;
                     }
                 }
 
-                ui.add_space(8.0);
+                ui.add_space(6.0);
 
-                // Widget Histogramme 4 Zones & Courbe Tonale Interactive
+                // Widget Histogramme 4 Zones & Courbe Tonale
                 let tonal_for_curve = TonalParams {
                     contrast: self.params.tonal_contrast,
                     whites: self.params.tonal_whites,
@@ -1005,7 +1375,7 @@ impl UltraHdrApp {
                 };
                 draw_tonal_histogram(ui, self.cached_histogram.as_ref(), self.hovered_zone.map(|(z, _)| z), &tonal_for_curve);
 
-                ui.add_space(10.0);
+                ui.add_space(8.0);
 
                 // 0. Contraste Global
                 ui.horizontal(|ui| {
@@ -1014,11 +1384,11 @@ impl UltraHdrApp {
                         draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_contrast * 100.0));
                     });
                 });
-                if ui.add(egui::Slider::new(&mut self.params.tonal_contrast, -2.0..=2.0).step_by(0.01).show_value(false)).on_hover_text("Ajuste la dynamique et la pente de contraste S-Curve entre ombres et hautes lumières (-200% à +200%).").changed() {
+                if ui.add(egui::Slider::new(&mut self.params.tonal_contrast, -2.0..=2.0).step_by(0.01).show_value(false)).changed() {
                     params_changed = true;
                 }
 
-                ui.add_space(8.0);
+                ui.add_space(6.0);
 
                 // 1. Blancs
                 ui.horizontal(|ui| {
@@ -1077,298 +1447,443 @@ impl UltraHdrApp {
                 if ui.add(egui::Slider::new(&mut self.params.tonal_blacks, -2.0..=2.0).step_by(0.01).show_value(false)).changed() {
                     params_changed = true;
                 }
-
-                ui.add_space(8.0);
-
-                // 5. Vibrance HDR
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Vibrance HDR :").color(Color32::from_rgb(255, 170, 200)));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_vibrance * 100.0));
-                    });
-                });
-                if ui.add(egui::Slider::new(&mut self.params.tonal_vibrance, -2.0..=2.0).step_by(0.01).show_value(false)).on_hover_text("Protège les tons chair et les couleurs déjà saturées tout en rehaussant les teintes douces (-200% à +200%).").changed() {
-                    params_changed = true;
-                }
-
-                ui.add_space(6.0);
-
-                // 6. Saturation HDR
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Saturation HDR :").color(Color32::from_rgb(255, 140, 160)));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_saturation * 100.0));
-                    });
-                });
-                if ui.add(egui::Slider::new(&mut self.params.tonal_saturation, -2.0..=2.0).step_by(0.01).show_value(false)).on_hover_text("Ajuste l'intensité chromatique générale de l'image pour préserver l'éclat des couleurs dans les hautes lumières (-200% à +200%).").changed() {
-                    params_changed = true;
-                }
-
-                ui.add_space(8.0);
-
-                // Filtre Anti-Halo
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Filtre Anti-Halo (Gain Map) :").size(12.0).color(Color32::from_rgb(180, 190, 215)));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        draw_val_pill(ui, &format!("{:.0}%", self.params.anti_halo * 100.0));
-                    });
-                });
-                if ui.add(egui::Slider::new(&mut self.params.anti_halo, 0.0..=1.0).step_by(0.05).show_value(false)).on_hover_text("Élimine les artéfacts de halo et de liseré autour des transitions de fort contraste.").changed() {
-                    params_changed = true;
-                }
-
-                ui.add_space(8.0);
-
-                // Bouton réinitialiser tonalité & couleurs
-                let btn_reset_tonal = egui::Button::new(
-                    egui::RichText::new("↺ Réinitialiser Tonalité & Couleur à 0").size(11.5).color(Color32::from_rgb(170, 180, 205)),
-                )
-                .fill(Color32::from_rgb(26, 29, 39))
-                .stroke(Stroke::new(1.0f32, Color32::from_rgb(45, 50, 70)))
-                .rounding(Rounding::same(5.0));
-
-                if ui.add_sized([ui.available_width(), 24.0], btn_reset_tonal).clicked() {
-                    self.params.tonal_contrast = 0.0;
-                    self.params.tonal_whites = 0.0;
-                    self.params.tonal_highlights = 0.0;
-                    self.params.tonal_shadows = 0.0;
-                    self.params.tonal_blacks = 0.0;
-                    self.params.tonal_saturation = 0.0;
-                    self.params.tonal_vibrance = 0.0;
-                    params_changed = true;
-                }
             }
         });
         ui.add_space(8.0);
 
-        // ── 3. CARTE : 🖥️ Simulation Écran SDR ──
+        // ── 2. CARTE : 🌈 Couleur & Finition HDR ──
         card_frame.show(ui, |ui| {
-            let chevron = if self.card_simulation_open { "▾" } else { "▸" };
-            let header_resp = ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(chevron).size(13.0).color(Color32::from_rgb(150, 155, 175)));
-                ui.label(egui::RichText::new("🖥️").size(14.0));
-                ui.label(egui::RichText::new("Simulation Écran SDR").strong().size(13.5).color(Color32::WHITE));
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("🌈").size(14.0));
+                ui.label(egui::RichText::new("Couleur & Finition HDR").strong().size(13.0).color(Color32::WHITE));
+            });
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            ui.spacing_mut().slider_width = (ui.available_width() - 4.0).max(200.0);
+
+            // Vibrance HDR
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Vibrance HDR :").color(Color32::from_rgb(255, 170, 200)));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    draw_pill(ui, "Max Headroom", Color32::from_rgb(20, 35, 55), Color32::from_rgb(0, 170, 255));
+                    draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_vibrance * 100.0));
                 });
             });
-
-            if header_resp.response.interact(egui::Sense::click()).clicked() {
-                self.card_simulation_open = !self.card_simulation_open;
+            if ui.add(egui::Slider::new(&mut self.params.tonal_vibrance, -2.0..=2.0).step_by(0.01).show_value(false)).changed() {
+                params_changed = true;
             }
 
-            if self.card_simulation_open {
-                ui.spacing_mut().slider_width = (ui.available_width() - 4.0).max(260.0);
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
+            ui.add_space(6.0);
 
-                ui.label(egui::RichText::new("Simule la plage dynamique maximale récupérée sur votre écran standard :").small().color(Color32::from_rgb(170, 175, 190)));
-                ui.add_space(6.0);
-
-                // Curseur Exposition Virtuelle EV
-                ui.horizontal(|ui| {
-                    ui.label("Exposition Virtuelle (EV) :");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        draw_val_pill(ui, &format!("{:+.1} EV", self.params.ev_shift));
-                    });
+            // Saturation HDR
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Saturation HDR :").color(Color32::from_rgb(255, 140, 160)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    draw_val_pill(ui, &format!("{:+.0}%", self.params.tonal_saturation * 100.0));
                 });
-                if ui.add(egui::Slider::new(&mut self.params.ev_shift, -6.0..=6.0).step_by(0.1).show_value(false)).changed() {
-                    params_changed = true;
-                }
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("-6 EV (Hautes Lumières)").size(10.0).color(Color32::GRAY));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("+6 EV (Ombres)").size(10.0).color(Color32::GRAY));
-                    });
+            });
+            if ui.add(egui::Slider::new(&mut self.params.tonal_saturation, -2.0..=2.0).step_by(0.01).show_value(false)).changed() {
+                params_changed = true;
+            }
+
+            ui.add_space(6.0);
+
+            // Anti-Halo
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Filtre Anti-Halo :").size(12.0).color(Color32::from_rgb(180, 190, 215)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    draw_val_pill(ui, &format!("{:.0}%", self.params.anti_halo * 100.0));
                 });
+            });
+            if ui.add(egui::Slider::new(&mut self.params.anti_halo, 0.0..=1.0).step_by(0.05).show_value(false)).changed() {
+                params_changed = true;
+            }
 
-                ui.add_space(10.0);
-                ui.label(egui::RichText::new("Moteur de Tone-Mapping :").size(12.0).color(Color32::from_rgb(160, 165, 180)));
+            ui.add_space(8.0);
 
-                let modes = [
-                    ("vivid", "✨ Éclat Ultra HDR (Dynamique & Vif — Recommandé)"),
-                    ("natural", "🌿 Naturel (SDR 1:1 Préservé)"),
-                    ("aces", "🎬 ACES Filmic (Cinématique)"),
-                    ("reinhard", "⚖ Reinhard Étendu (Progressif)"),
-                    ("linear", "⚡ Directe (Observation Écrêtage)"),
-                ];
+            // Bouton réinitialiser
+            let btn_reset_tonal = egui::Button::new(
+                egui::RichText::new("↺ Réinitialiser Tonalité & Couleur").size(11.5).color(Color32::from_rgb(170, 180, 205)),
+            )
+            .fill(Color32::from_rgb(26, 29, 39))
+            .stroke(Stroke::new(1.0f32, Color32::from_rgb(45, 50, 70)))
+            .rounding(Rounding::same(5.0));
 
-                for (mode_key, mode_title) in modes {
-                    let is_cur = self.params.tone_map_mode == mode_key;
-                    let btn = egui::Button::new(
-                        egui::RichText::new(mode_title).size(12.0).color(if is_cur { Color32::WHITE } else { Color32::from_rgb(180, 185, 205) }),
-                    )
-                    .fill(if is_cur { Color32::from_rgb(0, 100, 180) } else { Color32::from_rgb(26, 29, 39) })
-                    .stroke(Stroke::new(1.0f32, if is_cur { Color32::from_rgb(0, 180, 255) } else { Color32::from_rgb(45, 50, 68) }))
-                    .rounding(Rounding::same(5.0));
-
-                    if ui.add_sized([ui.available_width(), 24.0], btn).clicked() {
-                        self.params.tone_map_mode = mode_key.to_string();
-                        params_changed = true;
-                    }
-                    ui.add_space(2.0);
-                }
+            if ui.add_sized([ui.available_width(), 24.0], btn_reset_tonal).clicked() {
+                self.params.tonal_contrast = 0.0;
+                self.params.tonal_whites = 0.0;
+                self.params.tonal_highlights = 0.0;
+                self.params.tonal_shadows = 0.0;
+                self.params.tonal_blacks = 0.0;
+                self.params.tonal_saturation = 0.0;
+                self.params.tonal_vibrance = 0.0;
+                params_changed = true;
             }
         });
-        ui.add_space(8.0);
 
-        // ── 3. CARTE : ⚙️ Réglages Ultra HDR ──
+        if params_changed {
+            self.recompute_and_update_textures(ctx);
+        }
+    }
+
+    fn ui_card_simulation(&mut self, ui: &mut egui::Ui, card_frame: &egui::Frame, is_vertical: bool) -> bool {
+        let mut params_changed = false;
         card_frame.show(ui, |ui| {
-            let chevron = if self.card_settings_open { "▾" } else { "▸" };
-            let header_resp = ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(chevron).size(13.0).color(Color32::from_rgb(150, 155, 175)));
-                ui.label(egui::RichText::new("⚙️").size(14.0));
-                ui.label(egui::RichText::new("Réglages Ultra HDR").strong().size(13.5).color(Color32::WHITE));
+            ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(120.0);
+
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("🖥️").size(15.0));
+                ui.label(egui::RichText::new("Simulation SDR & Rendu").strong().size(13.0).color(Color32::WHITE));
             });
+            ui.add_space(4.0);
 
-            if header_resp.response.interact(egui::Sense::click()).clicked() {
-                self.card_settings_open = !self.card_settings_open;
-            }
-
-            if self.card_settings_open {
-                ui.spacing_mut().slider_width = (ui.available_width() - 4.0).max(260.0);
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                // Peak Nits
-                ui.horizontal(|ui| {
-                    ui.label("Luminance de Crête :");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        draw_val_pill(ui, &format!("{:.0} nits", self.params.peak_nits));
-                    });
-                });
-                if ui.add(egui::Slider::new(&mut self.params.peak_nits, 200.0..=10000.0).step_by(50.0).show_value(false)).changed() {
-                    params_changed = true;
-                }
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("200 nits").size(10.0).color(Color32::GRAY));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("10 000 nits (Dolby Vision)").size(10.0).color(Color32::GRAY));
-                    });
-                });
-
-                ui.add_space(8.0);
-
-                // Gamma
-                ui.horizontal(|ui| {
-                    ui.label("Courbe de Boost (Gamma) :");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        draw_val_pill(ui, &format!("{:.2}", self.params.hi_gamma));
-                    });
-                });
-                if ui.add(egui::Slider::new(&mut self.params.hi_gamma, 0.10..=4.00).step_by(0.05).show_value(false)).changed() {
-                    params_changed = true;
-                }
-
-                ui.add_space(8.0);
-
-                // Préservation Ombres
-                ui.horizontal(|ui| {
-                    ui.label("Préservation Ombres :");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        draw_val_pill(ui, &format!("{:.2}×", self.params.shadow_boost));
-                    });
-                });
-                if ui.add(egui::Slider::new(&mut self.params.shadow_boost, 0.50..=4.00).step_by(0.02).show_value(false)).changed() {
-                    params_changed = true;
-                }
-
-                ui.add_space(8.0);
-
-                // Seuil Hautes Lumières
-                ui.horizontal(|ui| {
-                    ui.label("Seuil d'Élévation :");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        draw_val_pill(ui, &format!("{:.2}", self.params.highlight_threshold));
-                    });
-                });
-                if ui.add(egui::Slider::new(&mut self.params.highlight_threshold, 0.00..=0.98).step_by(0.02).show_value(false)).changed() {
-                    params_changed = true;
-                }
-
-                ui.add_space(10.0);
-
-                // Boîte de statistiques à 3 colonnes (Gain Min, Gain Max, Multiplicateur)
+            if self.is_hdr_display_active {
+                // Si HDR natif est actif : bandeau explicatif et simulation grisée
                 egui::Frame::none()
-                    .fill(Color32::from_rgb(16, 17, 24))
-                    .stroke(Stroke::new(1.0f32, Color32::from_rgb(45, 50, 70)))
+                    .fill(Color32::from_rgb(16, 34, 24))
+                    .stroke(Stroke::new(1.0f32, Color32::from_rgb(34, 197, 94)))
                     .rounding(Rounding::same(6.0))
-                    .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+                    .inner_margin(egui::Margin::symmetric(10.0, 7.0))
                     .show(ui, |ui| {
-                        ui.columns(3, |cols| {
-                            cols[0].vertical_centered(|ui| {
-                                ui.label(egui::RichText::new("Gain Min").size(10.5).color(Color32::GRAY));
-                                ui.label(egui::RichText::new(format!("{:.2} IL", self.gain_min)).strong().size(13.0).color(Color32::WHITE));
-                            });
-                            cols[1].vertical_centered(|ui| {
-                                ui.label(egui::RichText::new("Gain Max").size(10.5).color(Color32::GRAY));
-                                ui.label(egui::RichText::new(format!("+{:.2} IL", self.gain_max)).strong().size(13.0).color(Color32::from_rgb(0, 200, 255)));
-                            });
-                            cols[2].vertical_centered(|ui| {
-                                ui.label(egui::RichText::new("Multiplicateur").size(10.5).color(Color32::GRAY));
-                                ui.label(egui::RichText::new(format!("{:.1}×", self.preview_multiplier)).strong().size(13.0).color(Color32::from_rgb(255, 195, 40)));
-                            });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("🔒 Mode HDR Matériel Actif").strong().size(11.5).color(Color32::from_rgb(74, 222, 128)));
+                        });
+                        ui.label(egui::RichText::new("Affichage physique direct. Tonemapping SDR désactivé.").size(10.0).color(Color32::from_rgb(180, 210, 190)));
+                    });
+                ui.add_space(6.0);
+                ui.add_enabled_ui(false, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Éclat HDR :").size(11.5).color(Color32::GRAY));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            draw_val_pill(ui, &format!("{:.0}%", self.params.hdr_boost * 100.0));
                         });
                     });
+                    ui.add(egui::Slider::new(&mut self.params.hdr_boost, 0.0..=1.5).step_by(0.05).show_value(false));
+
+                    ui.add_space(3.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Épaulement :").size(11.5).color(Color32::GRAY));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            draw_val_pill(ui, &format!("{:.0}% seuil", self.params.highlight_rolloff * 100.0));
+                        });
+                    });
+                    ui.add(egui::Slider::new(&mut self.params.highlight_rolloff, 0.50..=0.90).step_by(0.02).show_value(false));
+                });
+            } else {
+                // Mode SDR Actif : Contrôles de simulation EDR intelligents sans cramage
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Éclat HDR (Punch) :").size(12.0).color(Color32::WHITE).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let pct = (self.params.hdr_boost * 100.0).round();
+                        let tag = if pct <= 5.0 {
+                            " (SDR pur)"
+                        } else if (pct - 100.0).abs() < 5.0 {
+                            " (100% HDR)"
+                        } else if pct >= 140.0 {
+                            " (Spéculaire)"
+                        } else {
+                            ""
+                        };
+                        draw_val_pill(ui, &format!("{:.0}%{}", pct, tag));
+                    });
+                });
+                if ui.add(egui::Slider::new(&mut self.params.hdr_boost, 0.0..=1.5).step_by(0.05).show_value(false)).changed() {
+                    params_changed = true;
+                }
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Épaulement / Rolloff :").size(11.5).color(Color32::from_rgb(180, 190, 215)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        draw_val_pill(ui, &format!("{:.0}% seuil", self.params.highlight_rolloff * 100.0));
+                    });
+                });
+                if ui.add(egui::Slider::new(&mut self.params.highlight_rolloff, 0.50..=0.90).step_by(0.02).show_value(false)).changed() {
+                    params_changed = true;
+                }
+
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Mode Tone-Mapping :").size(11.0).color(Color32::from_rgb(170, 175, 195)));
+                let modes = [
+                    ("vivid", "✨ Éclat"),
+                    ("natural", "🌿 Naturel"),
+                    ("aces", "🎬 ACES"),
+                    ("reinhard", "⚖ Reinhard"),
+                    ("linear", "⚡ Direct"),
+                ];
+
+                if is_vertical {
+                    // Si mode vertical / mobile : empiler les modes verticalement en boutons pleine largeur
+                    for (mode_key, mode_title) in modes {
+                        let is_cur = self.params.tone_map_mode == mode_key;
+                        let btn = egui::Button::new(
+                            egui::RichText::new(mode_title).size(11.5).color(if is_cur { Color32::WHITE } else { Color32::from_rgb(180, 185, 205) }),
+                        )
+                        .fill(if is_cur { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(30, 34, 48) })
+                        .stroke(Stroke::new(1.0f32, if is_cur { Color32::from_rgb(0, 180, 255) } else { Color32::from_rgb(50, 56, 76) }))
+                        .rounding(Rounding::same(5.0));
+
+                        if ui.add_sized([ui.available_width(), 26.0], btn).clicked() {
+                            self.params.tone_map_mode = mode_key.to_string();
+                            params_changed = true;
+                        }
+                        ui.add_space(2.0);
+                    }
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        for (mode_key, mode_title) in modes {
+                            let is_cur = self.params.tone_map_mode == mode_key;
+                            let btn = egui::Button::new(
+                                egui::RichText::new(mode_title).size(11.0).color(if is_cur { Color32::WHITE } else { Color32::from_rgb(180, 185, 205) }),
+                            )
+                            .fill(if is_cur { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(30, 34, 48) })
+                            .stroke(Stroke::new(1.0f32, if is_cur { Color32::from_rgb(0, 180, 255) } else { Color32::from_rgb(50, 56, 76) }))
+                            .rounding(Rounding::same(5.0));
+
+                            if ui.add(btn).clicked() {
+                                self.params.tone_map_mode = mode_key.to_string();
+                                params_changed = true;
+                            }
+                        }
+                    });
+                }
             }
         });
-        ui.add_space(8.0);
+        params_changed
+    }
 
-        // ── 4. CARTE : 💾 Exportation ──
-        let mut trigger_export = false;
-
+    fn ui_card_headroom(&mut self, ui: &mut egui::Ui, card_frame: &egui::Frame, _is_vertical: bool) -> bool {
+        let mut params_changed = false;
         card_frame.show(ui, |ui| {
-            let chevron = if self.card_export_open { "▾" } else { "▸" };
-            let header_resp = ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(chevron).size(13.0).color(Color32::from_rgb(150, 155, 175)));
-                ui.label(egui::RichText::new("💾").size(14.0));
-                ui.label(egui::RichText::new("Exportation").strong().size(13.5).color(Color32::WHITE));
-            });
+            ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(120.0);
 
-            if header_resp.response.interact(egui::Sense::click()).clicked() {
-                self.card_export_open = !self.card_export_open;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("📐").size(15.0));
+                ui.label(egui::RichText::new("Capacité Écran & Export").strong().size(13.0).color(Color32::WHITE));
+            });
+            ui.add_space(2.0);
+
+            // Slider Cible Export Peak Nits
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Luminance Crête Export :").size(12.0).color(Color32::WHITE));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    draw_val_pill(ui, &format!("{:.0} nits", self.params.peak_nits));
+                });
+            });
+            if ui.add(egui::Slider::new(&mut self.params.peak_nits, 200.0..=10000.0).step_by(50.0).show_value(false)).changed() {
+                params_changed = true;
             }
 
-            if self.card_export_open {
-                ui.spacing_mut().slider_width = (ui.available_width() - 4.0).max(260.0);
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
+            ui.add_space(4.0);
 
-                ui.horizontal(|ui| {
-                    ui.label("Qualité JPEG Base :");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        draw_val_pill(ui, &format!("{}%", self.base_quality));
+            // Indicateur d'adaptation proportionnelle ISO 21496-1
+            let weight = compute_display_headroom_weight(self.params.peak_nits, self.display_peak_nits, self.params.sdr_white);
+            let effective_nits = (self.params.sdr_white * (self.params.peak_nits / self.params.sdr_white).powf(weight)).min(self.display_peak_nits);
+
+            egui::Frame::none()
+                .fill(Color32::from_rgb(17, 21, 30))
+                .stroke(Stroke::new(1.0f32, Color32::from_rgb(40, 48, 68)))
+                .rounding(Rounding::same(6.0))
+                .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("💡").size(12.0));
+                        if self.params.peak_nits > self.display_peak_nits {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Adaptation : {:.0} nits sur votre écran (Échelle {:.0}%)",
+                                    effective_nits, weight * 100.0
+                                ))
+                                .size(11.0)
+                                .color(Color32::from_rgb(0, 200, 255)),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Écran 100% capable ({:.0} nits)",
+                                    self.display_peak_nits
+                                ))
+                                .size(11.0)
+                                .color(Color32::from_rgb(46, 204, 113)),
+                            );
+                        }
+                    });
+                    ui.label(
+                        egui::RichText::new("Zéro cramage : prévisualisation proportionnelle conforme ISO 21496-1.")
+                            .size(9.5)
+                            .color(Color32::from_rgb(150, 160, 180)),
+                    );
+                });
+        });
+        params_changed
+    }
+
+    fn ui_card_export(&mut self, ui: &mut egui::Ui, card_frame: &egui::Frame, is_vertical: bool) -> (bool, bool) {
+        let mut trigger_export = false;
+        card_frame.show(ui, |ui| {
+            ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(120.0);
+
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("💾").size(15.0));
+                ui.label(egui::RichText::new("Qualité & Export Ultra HDR").strong().size(13.0).color(Color32::WHITE));
+            });
+            ui.add_space(2.0);
+
+            if is_vertical {
+                // Si vertical : placer les sliders Base et Gain Map verticalement
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Base :").size(11.5).color(Color32::WHITE));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            draw_val_pill(ui, &format!("{}%", self.base_quality));
+                        });
+                    });
+                    ui.add(egui::Slider::new(&mut self.base_quality, 75..=100).show_value(false));
+
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Gain Map :").size(11.5).color(Color32::WHITE));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            draw_val_pill(ui, &format!("{}%", self.gainmap_quality));
+                        });
+                    });
+                    ui.add(egui::Slider::new(&mut self.gainmap_quality, 65..=100).show_value(false));
+                });
+            } else {
+                ui.columns(2, |sub_cols| {
+                    sub_cols[0].vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Base :").size(11.5).color(Color32::WHITE));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                draw_val_pill(ui, &format!("{}%", self.base_quality));
+                            });
+                        });
+                        ui.add(egui::Slider::new(&mut self.base_quality, 75..=100).show_value(false));
+                    });
+
+                    sub_cols[1].vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Gain Map :").size(11.5).color(Color32::WHITE));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                draw_val_pill(ui, &format!("{}%", self.gainmap_quality));
+                            });
+                        });
+                        ui.add(egui::Slider::new(&mut self.gainmap_quality, 65..=100).show_value(false));
                     });
                 });
-                ui.add(egui::Slider::new(&mut self.base_quality, 75..=100).show_value(false));
+            }
 
-                ui.add_space(8.0);
+            ui.add_space(4.0);
 
-                ui.horizontal(|ui| {
-                    ui.label("Qualité Gain Map :");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        draw_val_pill(ui, &format!("{}%", self.gainmap_quality));
-                    });
-                });
-                ui.add(egui::Slider::new(&mut self.gainmap_quality, 65..=100).show_value(false));
+            let export_enabled = self.loaded_image.is_some();
+            let btn_export = egui::Button::new(
+                egui::RichText::new("💾 Exporter JPEG Ultra HDR (F12)").strong().size(12.5).color(Color32::WHITE),
+            )
+            .fill(if export_enabled { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(38, 42, 54) })
+            .rounding(Rounding::same(6.0));
 
-                ui.add_space(8.0);
-                ui.checkbox(&mut self.save_standalone_gainmap, "Enregistrer la Gain Map seule en JPEG (.jpg)");
+            if ui.add_sized([ui.available_width(), 30.0], btn_export).clicked() {
+                trigger_export = true;
+            }
 
-                ui.add_space(10.0);
-                let export_enabled = self.loaded_image.is_some();
-                let btn_export = egui::Button::new(
-                    egui::RichText::new("Enregistrer le JPEG Ultra HDR").strong().size(13.5).color(Color32::WHITE),
+            ui.add_space(2.0);
+            if is_vertical {
+                // En mode vertical, empiler la case et le bouton lot verticalement
+                ui.checkbox(&mut self.save_standalone_gainmap, egui::RichText::new("Gain Map seule").size(11.0));
+                ui.add_space(3.0);
+                let btn_batch = egui::Button::new(
+                    egui::RichText::new("⚡ Traitement par lot...").size(11.5).color(Color32::from_rgb(210, 220, 240)),
                 )
-                .fill(if export_enabled { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(38, 42, 54) })
-                .rounding(Rounding::same(6.0));
+                .fill(Color32::from_rgb(32, 36, 50))
+                .rounding(Rounding::same(5.0));
 
-                if ui.add_sized([ui.available_width(), 34.0], btn_export).clicked() {
-                    trigger_export = true;
+                if ui.add_sized([ui.available_width(), 26.0], btn_batch).on_hover_text("Convertit en masse tout un répertoire en JPEG Ultra HDR.").clicked() {
+                    self.show_batch_dialog = true;
                 }
+            } else {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.save_standalone_gainmap, egui::RichText::new("Gain Map seule").size(10.5));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let btn_batch = egui::Button::new(
+                            egui::RichText::new("⚡ Lot...").size(10.5).color(Color32::from_rgb(210, 220, 240)),
+                        )
+                        .fill(Color32::from_rgb(32, 36, 50))
+                        .rounding(Rounding::same(5.0));
+
+                        if ui.add(btn_batch).on_hover_text("Convertit en masse tout un répertoire en JPEG Ultra HDR.").clicked() {
+                            self.show_batch_dialog = true;
+                        }
+                    });
+                });
+            }
+        });
+        (false, trigger_export)
+    }
+
+    fn ui_panel_simulation_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_vertical: bool) {
+        let card_frame = egui::Frame::none()
+            .fill(Color32::from_rgb(22, 25, 35))
+            .stroke(Stroke::new(1.0f32, Color32::from_rgb(44, 49, 68)))
+            .rounding(Rounding::same(8.0))
+            .inner_margin(egui::Margin::symmetric(14.0, 10.0));
+
+        let mut changed = false;
+        changed |= self.ui_card_simulation(ui, &card_frame, is_vertical);
+        ui.add_space(8.0);
+        changed |= self.ui_card_headroom(ui, &card_frame, is_vertical);
+
+        if changed {
+            self.recompute_and_update_textures(ctx);
+        }
+    }
+
+    fn ui_panel_export_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_vertical: bool) {
+        let card_frame = egui::Frame::none()
+            .fill(Color32::from_rgb(22, 25, 35))
+            .stroke(Stroke::new(1.0f32, Color32::from_rgb(44, 49, 68)))
+            .rounding(Rounding::same(8.0))
+            .inner_margin(egui::Margin::symmetric(14.0, 10.0));
+
+        let mut changed = false;
+        let (_p_ch, trigger_export) = self.ui_card_export(ui, &card_frame, is_vertical);
+        ui.add_space(8.0);
+        changed |= self.ui_card_headroom(ui, &card_frame, is_vertical);
+
+        if trigger_export {
+            self.export_ultrahdr();
+        }
+        if changed {
+            self.recompute_and_update_textures(ctx);
+        }
+    }
+
+    fn ui_bottom_dock(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let mut params_changed = false;
+        let mut trigger_export = false;
+
+        let card_frame = egui::Frame::none()
+            .fill(Color32::from_rgb(22, 25, 35))
+            .stroke(Stroke::new(1.0f32, Color32::from_rgb(44, 49, 68)))
+            .rounding(Rounding::same(8.0))
+            .inner_margin(egui::Margin::symmetric(14.0, 10.0));
+
+        ui.columns(3, |cols| {
+            // ── COLONNE 1 : Simulation Écran SDR & Tone-Mapping ──
+            if self.ui_card_simulation(&mut cols[0], &card_frame, false) {
+                params_changed = true;
+            }
+
+            // ── COLONNE 2 : Capacité Écran & Luminance Cible (ISO 21496-1) ──
+            if self.ui_card_headroom(&mut cols[1], &card_frame, false) {
+                params_changed = true;
+            }
+
+            // ── COLONNE 3 : Paramètres d'Encodage & Export ──
+            let (_c, trig) = self.ui_card_export(&mut cols[2], &card_frame, false);
+            if trig {
+                trigger_export = true;
             }
         });
 
@@ -1381,6 +1896,68 @@ impl UltraHdrApp {
         }
     }
 
+    fn ui_vertical_control_deck(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            // Rail sélecteur vertical gauche (Boutons tactiles ergonomiques pour mobile)
+            ui.vertical(|ui| {
+                ui.set_width(108.0);
+                let panes = [
+                    ConfigPane::Tonal,
+                    ConfigPane::Simulation,
+                    ConfigPane::Engine,
+                    ConfigPane::Export,
+                ];
+
+                for pane in panes {
+                    let is_active = self.active_config_pane == pane;
+                    let btn_text = format!("{} {}", pane.icon(), pane.title());
+                    let btn = egui::Button::new(
+                        egui::RichText::new(btn_text)
+                            .size(12.0)
+                            .strong()
+                            .color(if is_active { Color32::WHITE } else { Color32::from_rgb(175, 185, 205) }),
+                    )
+                    .fill(if is_active { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(25, 29, 41) })
+                    .stroke(Stroke::new(1.0f32, if is_active { Color32::from_rgb(0, 200, 255) } else { Color32::from_rgb(44, 50, 70) }))
+                    .rounding(Rounding::same(8.0));
+
+                    if ui.add_sized([108.0, 38.0], btn).clicked() {
+                        self.active_config_pane = pane;
+                    }
+                    ui.add_space(3.0);
+                }
+            });
+
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            // Conteneur vertical droit pour le panneau actif (Strictement TopDown vertical)
+            ui.vertical(|ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            match self.active_config_pane {
+                                ConfigPane::Tonal => {
+                                    self.ui_panel_tonal_content(ui, ctx, true);
+                                }
+                                ConfigPane::Simulation => {
+                                    self.ui_panel_simulation_content(ui, ctx, true);
+                                }
+                                ConfigPane::Engine => {
+                                    self.ui_panel_engine_content(ui, ctx, true);
+                                }
+                                ConfigPane::Export => {
+                                    self.ui_panel_export_content(ui, ctx, true);
+                                }
+                            }
+                        });
+                    });
+            });
+        });
+    }
+
     fn apply_preset(&mut self, preset: &HDRPreset) {
         self.params.peak_nits = preset.peak_nits;
         self.params.sdr_white = preset.sdr_white;
@@ -1389,26 +1966,36 @@ impl UltraHdrApp {
         self.params.highlight_threshold = preset.highlight_threshold;
     }
 
-    fn ui_center_viewport(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn ui_center_viewport(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_vertical: bool) {
         // Barre d'outils de la visionneuse
         egui::Frame::none()
             .fill(Color32::from_rgb(18, 19, 26))
-            .inner_margin(egui::Margin::symmetric(12.0, 6.0))
+            .inner_margin(egui::Margin::symmetric(if is_vertical { 6.0 } else { 12.0 }, 6.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let mut mode_changed = false;
-                    let modes = [
-                        (ViewerMode::Split, "↔ Glissière Avant / Après"),
-                        (ViewerMode::SideBySide, "◫ Côte à côte"),
-                        (ViewerMode::FullHdr, "✨ Vrai Ultra HDR Direct"),
-                        (ViewerMode::GainMap, "◐ Gain Map"),
-                        (ViewerMode::Heatmap, "🔥 Carte Nits"),
-                    ];
+                    let modes: &[(ViewerMode, &str)] = if is_vertical {
+                        &[
+                            (ViewerMode::Split, "↔ Split"),
+                            (ViewerMode::SideBySide, "◫ Côte"),
+                            (ViewerMode::FullHdr, "✨ HDR"),
+                            (ViewerMode::GainMap, "◐ Map"),
+                            (ViewerMode::Heatmap, "🔥 Nits"),
+                        ]
+                    } else {
+                        &[
+                            (ViewerMode::Split, "↔ Glissière Avant / Après"),
+                            (ViewerMode::SideBySide, "◫ Côte à côte"),
+                            (ViewerMode::FullHdr, "✨ Vrai Ultra HDR Direct"),
+                            (ViewerMode::GainMap, "◐ Gain Map"),
+                            (ViewerMode::Heatmap, "🔥 Carte Nits"),
+                        ]
+                    };
 
-                    for (m, label) in modes {
+                    for &(m, label) in modes {
                         let is_active = self.mode == m;
                         let btn = egui::Button::new(
-                            egui::RichText::new(label).size(12.0).color(if is_active { Color32::WHITE } else { Color32::from_rgb(180, 185, 205) }),
+                            egui::RichText::new(label).size(if is_vertical { 11.0 } else { 12.0 }).color(if is_active { Color32::WHITE } else { Color32::from_rgb(180, 185, 205) }),
                         )
                         .fill(if is_active { Color32::from_rgb(0, 120, 212) } else { Color32::from_rgb(26, 29, 39) })
                         .stroke(Stroke::new(1.0f32, if is_active { Color32::from_rgb(0, 180, 255) } else { Color32::from_rgb(45, 50, 68) }))
@@ -1424,9 +2011,9 @@ impl UltraHdrApp {
                         self.recompute_and_update_textures(ctx);
                     }
 
-                    ui.add_space(8.0);
+                    ui.add_space(if is_vertical { 4.0 } else { 8.0 });
                     ui.separator();
-                    ui.add_space(8.0);
+                    ui.add_space(if is_vertical { 4.0 } else { 8.0 });
 
                     // Bouton de comparaison instantanée
                     let is_compare_active = self.compare_toggled
@@ -1436,9 +2023,10 @@ impl UltraHdrApp {
                                 || i.key_down(egui::Key::Slash)
                         });
 
+                    let compare_label = if is_vertical { "👁 Orig" } else { "👁 Original [Espace / \\]" };
                     let btn_compare = egui::Button::new(
-                        egui::RichText::new("👁 Original [Espace / \\]")
-                            .size(12.0)
+                        egui::RichText::new(compare_label)
+                            .size(if is_vertical { 11.0 } else { 12.0 })
                             .color(if is_compare_active {
                                 Color32::BLACK
                             } else {
@@ -1470,18 +2058,21 @@ impl UltraHdrApp {
 
                     // Contrôles de Zoom
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(egui::RichText::new("+").size(13.0)).clicked() {
+                        if ui.button(egui::RichText::new("+").size(12.5)).clicked() {
                             self.zoom = (self.zoom * 1.2).clamp(0.2, 8.0);
                         }
-                        ui.label(egui::RichText::new(format!("{:.0}%", self.zoom * 100.0)).size(12.0).color(Color32::from_rgb(200, 205, 225)));
-                        if ui.button(egui::RichText::new("-").size(13.0)).clicked() {
+                        ui.label(egui::RichText::new(format!("{:.0}%", self.zoom * 100.0)).size(11.5).color(Color32::from_rgb(200, 205, 225)));
+                        if ui.button(egui::RichText::new("-").size(12.5)).clicked() {
                             self.zoom = (self.zoom / 1.2).clamp(0.2, 8.0);
                         }
-                        if ui.button("1:1").clicked() {
-                            self.zoom = 1.0;
-                            self.pan = Vec2::ZERO;
+                        if !is_vertical {
+                            if ui.button("1:1").clicked() {
+                                self.zoom = 1.0;
+                                self.pan = Vec2::ZERO;
+                            }
                         }
-                        if ui.button("⛶ Ajuster").clicked() {
+                        let fit_label = if is_vertical { "⛶" } else { "⛶ Ajuster" };
+                        if ui.button(fit_label).clicked() {
                             self.zoom = 1.0;
                             self.pan = Vec2::ZERO;
                         }
@@ -1535,28 +2126,49 @@ impl UltraHdrApp {
         let available_size = ui.available_size();
         let (rect, response) = ui.allocate_exact_size(available_size, egui::Sense::click_and_drag());
 
-        // Zoom à la molette
+        // Zoom à la molette centré sur le curseur de la souris
         let scroll_delta = ctx.input(|i| i.raw_scroll_delta.y);
         if scroll_delta != 0.0 && response.hovered() {
             let zoom_factor = if scroll_delta > 0.0 { 1.12 } else { 0.88 };
-            self.zoom = (self.zoom * zoom_factor).clamp(0.2, 8.0);
+            let new_zoom = (self.zoom * zoom_factor).clamp(0.15, 10.0);
+            if let Some(mouse_pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                let center = rect.center() + self.pan;
+                let ratio = new_zoom / self.zoom;
+                self.pan = ((center - mouse_pos) * ratio) + (mouse_pos - rect.center());
+            }
+            self.zoom = new_zoom;
         }
 
-        // Déplacement (Pan) au clic droit ou milieu ou glisser
-        if response.dragged_by(egui::PointerButton::Secondary) || response.dragged_by(egui::PointerButton::Middle) {
+        // Double-clic pour réinitialiser le zoom & centrage à 1:1
+        if response.double_clicked() {
+            self.zoom = 1.0;
+            self.pan = Vec2::ZERO;
+        }
+
+        // Déplacement (Pan) au clic droit, clic molette, ou clic gauche (si hors outil TAT et hors split)
+        let can_drag_pan = response.dragged_by(egui::PointerButton::Secondary)
+            || response.dragged_by(egui::PointerButton::Middle)
+            || (!self.targeted_tool_active && self.mode != ViewerMode::Split && response.dragged_by(egui::PointerButton::Primary));
+
+        if can_drag_pan {
             self.pan += response.drag_delta();
         }
 
         let painter = ui.painter_at(rect);
         let preview = self.preview_buffer.as_ref().unwrap();
-        let aspect = preview.width as f32 / preview.height as f32;
+        let img_w = preview.width as f32;
+        let img_h = preview.height as f32;
+        let aspect = (img_w / img_h).max(1e-4);
 
-        let mut draw_w = rect.width().min(rect.height() * aspect) * self.zoom;
-        let mut draw_h = (draw_w / aspect) * self.zoom;
-        if draw_w > rect.width() && self.zoom <= 1.0 {
-            draw_w = rect.width();
-            draw_h = draw_w / aspect;
-        }
+        // Calcul STRICT de la taille pour préserver le ratio exact à TOUS les niveaux de zoom
+        let (base_w, base_h) = if rect.width() / rect.height() > aspect {
+            (rect.height() * aspect, rect.height())
+        } else {
+            (rect.width(), rect.width() / aspect)
+        };
+
+        let draw_w = base_w * self.zoom;
+        let draw_h = base_h * self.zoom;
 
         let center = rect.center() + self.pan;
         let img_rect = Rect::from_center_size(center, Vec2::new(draw_w, draw_h));
@@ -1637,15 +2249,20 @@ impl UltraHdrApp {
                 ViewerMode::SideBySide => {
                     if let (Some(tex_sdr), Some(tex_hdr)) = (&self.tex_original_sdr, &self.tex_hdr_preview) {
                         let gap = 12.0;
-                        let total_w = rect.width() - gap;
-                        let single_w = (total_w * 0.49).min(rect.height() * aspect) * self.zoom;
-                        let single_h = single_w / aspect;
+                        let half_avail_w = ((rect.width() - gap) * 0.5).max(10.0);
+                        let (base_single_w, base_single_h) = if half_avail_w / rect.height() > aspect {
+                            (rect.height() * aspect, rect.height())
+                        } else {
+                            (half_avail_w, half_avail_w / aspect)
+                        };
+                        let single_w = base_single_w * self.zoom;
+                        let single_h = base_single_h * self.zoom;
                         let left_rect = Rect::from_center_size(
-                            Pos2::new(center.x - single_w * 0.5 - gap * 0.5, center.y),
+                            Pos2::new(center.x - (single_w + gap) * 0.5, center.y),
                             Vec2::new(single_w, single_h),
                         );
                         let right_rect = Rect::from_center_size(
-                            Pos2::new(center.x + single_w * 0.5 + gap * 0.5, center.y),
+                            Pos2::new(center.x + (single_w + gap) * 0.5, center.y),
                             Vec2::new(single_w, single_h),
                         );
 
@@ -1664,15 +2281,20 @@ impl UltraHdrApp {
             let hover_pos = ctx.input(|i| i.pointer.hover_pos());
             let (in_img, norm_x, norm_y) = if self.mode == ViewerMode::SideBySide {
                 let gap = 12.0;
-                let total_w = rect.width() - gap;
-                let single_w = (total_w * 0.49).min(rect.height() * aspect) * self.zoom;
-                let single_h = single_w / aspect;
+                let half_avail_w = ((rect.width() - gap) * 0.5).max(10.0);
+                let (base_single_w, base_single_h) = if half_avail_w / rect.height() > aspect {
+                    (rect.height() * aspect, rect.height())
+                } else {
+                    (half_avail_w, half_avail_w / aspect)
+                };
+                let single_w = base_single_w * self.zoom;
+                let single_h = base_single_h * self.zoom;
                 let left_rect = Rect::from_center_size(
-                    Pos2::new(center.x - single_w * 0.5 - gap * 0.5, center.y),
+                    Pos2::new(center.x - (single_w + gap) * 0.5, center.y),
                     Vec2::new(single_w, single_h),
                 );
                 let right_rect = Rect::from_center_size(
-                    Pos2::new(center.x + single_w * 0.5 + gap * 0.5, center.y),
+                    Pos2::new(center.x + (single_w + gap) * 0.5, center.y),
                     Vec2::new(single_w, single_h),
                 );
                 if let Some(pos) = hover_pos {
@@ -2055,7 +2677,7 @@ fn parse_drm_edid(data: &[u8]) -> Option<ParsedEdid> {
         }
     }
     if model_name.is_empty() {
-        model_name = "Écran Interne (eDP)".to_string();
+        model_name = "Écran Principal".to_string();
     }
 
     // 2. Profondeur de couleur (Byte 20 bits 6-4)
@@ -2130,12 +2752,184 @@ fn parse_drm_edid(data: &[u8]) -> Option<ParsedEdid> {
 }
 
 /// Détecte les capacités HDR physiques de l'écran (Windows DXGI / WDDM ou Linux DRM sysfs / Wayland).
-fn detect_hdr_display() -> (bool, String) {
+fn detect_hdr_display() -> (bool, String, f32) {
     #[cfg(target_os = "windows")]
     {
-        let is_hdr = false;
-        let info = "Windows : Détection pipeline scRGB linéaire (DXGI / Direct3D 12)".to_string();
-        (is_hdr, info)
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        #[repr(C)]
+        struct DisplayDeviceW {
+            cb: u32,
+            device_name: [u16; 32],
+            device_string: [u16; 128],
+            state_flags: u32,
+            device_id: [u16; 128],
+            device_key: [u16; 128],
+        }
+
+        extern "system" {
+            fn EnumDisplayDevicesW(
+                lp_device: *const u16,
+                i_dev_num: u32,
+                lp_display_device: *mut DisplayDeviceW,
+                dw_flags: u32,
+            ) -> i32;
+        }
+
+        // 1. Énumération des écrans actuellement connectés et attachés au bureau Windows
+        let mut primary_device_id = String::new();
+        let mut attached_device_ids = Vec::new();
+
+        unsafe {
+            let mut dev = DisplayDeviceW {
+                cb: std::mem::size_of::<DisplayDeviceW>() as u32,
+                device_name: [0; 32],
+                device_string: [0; 128],
+                state_flags: 0,
+                device_id: [0; 128],
+                device_key: [0; 128],
+            };
+
+            let mut i = 0;
+            while EnumDisplayDevicesW(std::ptr::null(), i, &mut dev, 0) != 0 {
+                if (dev.state_flags & 1) != 0 {
+                    let is_primary_adapter = (dev.state_flags & 4) != 0;
+                    let mut mon = DisplayDeviceW {
+                        cb: std::mem::size_of::<DisplayDeviceW>() as u32,
+                        device_name: [0; 32],
+                        device_string: [0; 128],
+                        state_flags: 0,
+                        device_id: [0; 128],
+                        device_key: [0; 128],
+                    };
+                    let mut j = 0;
+                    while EnumDisplayDevicesW(dev.device_name.as_ptr(), j, &mut mon, 0) != 0 {
+                        if (mon.state_flags & 1) != 0 {
+                            let id = String::from_utf16_lossy(&mon.device_id)
+                                .trim_matches('\0')
+                                .to_string();
+                            let parts: Vec<&str> = id.split('\\').collect();
+                            if parts.len() >= 2 {
+                                let mon_id = parts[1].to_string();
+                                if is_primary_adapter && primary_device_id.is_empty() {
+                                    primary_device_id = mon_id.clone();
+                                }
+                                attached_device_ids.push(mon_id);
+                            }
+                        }
+                        j += 1;
+                    }
+                }
+                i += 1;
+            }
+        }
+
+        let target_mon_id = if !primary_device_id.is_empty() {
+            primary_device_id
+        } else if let Some(first) = attached_device_ids.first() {
+            first.clone()
+        } else {
+            String::new()
+        };
+
+        let mut is_hdr = false;
+        let mut model_name = String::new();
+        let mut max_lum = 0u32;
+        let mut min_lum = 0.0f32;
+        let mut bpc = 8u8;
+        let mut is_bt2020 = false;
+
+        // 2. Récupération de l'EDID physique de l'écran connecté dans le registre
+        if !target_mon_id.is_empty() {
+            let reg_path = format!(r"HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\{}", target_mon_id);
+
+            if let Ok(output) = std::process::Command::new("reg")
+                .args(["query", &reg_path, "/s", "/v", "EDID"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+            {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("EDID") && trimmed.contains("REG_BINARY") {
+                        if let Some(pos) = trimmed.find("REG_BINARY") {
+                            let hex_str = trimmed[pos + 10..].trim();
+                            let mut edid_bytes = Vec::new();
+                            let chars: Vec<char> = hex_str.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+                            for chunk in chars.chunks(2) {
+                                if chunk.len() == 2 {
+                                    if let Ok(byte) = u8::from_str_radix(&format!("{}{}", chunk[0], chunk[1]), 16) {
+                                        edid_bytes.push(byte);
+                                    }
+                                }
+                            }
+                            if let Some(parsed) = parse_drm_edid(&edid_bytes) {
+                                model_name = parsed.model_name;
+                                bpc = parsed.bits_per_channel;
+                                max_lum = parsed.max_lum_nits;
+                                min_lum = parsed.min_lum_nits;
+                                is_bt2020 = parsed.is_bt2020;
+
+                                // L'écran n'est HDR QUE si son matériel supporte le HDR ET que Windows l'a activé
+                                if parsed.is_hdr {
+                                    if let Ok(adv_out) = std::process::Command::new("reg")
+                                        .args(["query", r"HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\MonitorDataStore", "/s"])
+                                        .creation_flags(CREATE_NO_WINDOW)
+                                        .output()
+                                    {
+                                        let adv_text = String::from_utf8_lossy(&adv_out.stdout);
+                                        let mut in_target = false;
+                                        for adv_line in adv_text.lines() {
+                                            if adv_line.starts_with("HKEY_LOCAL_MACHINE") {
+                                                in_target = adv_line.contains(&target_mon_id);
+                                            }
+                                            if in_target && adv_line.contains("AdvancedColorEnabled") && adv_line.contains("0x1") {
+                                                is_hdr = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if model_name.is_empty() {
+            model_name = "Écran SDR Standard".to_string();
+        }
+
+        let peak_nits = if max_lum > 0 {
+            max_lum as f32
+        } else if is_hdr {
+            400.0
+        } else {
+            300.0 // Standard SDR
+        };
+
+        let gamut_str = if is_bt2020 { "BT.2020" } else { "sRGB" };
+        let info = if is_hdr {
+            let min_str = if min_lum > 0.0 {
+                format!("{:.3} nits", min_lum)
+            } else {
+                "0.005 nits".to_string()
+            };
+            format!(
+                "{} (Pic {:.0} nits, Noir {}, {}-bit {})",
+                model_name, peak_nits, min_str, bpc.max(10), gamut_str
+            )
+        } else {
+            format!(
+                "{} ({}-bit, {})",
+                model_name, bpc, gamut_str
+            )
+        };
+
+        (is_hdr, info, peak_nits)
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -2143,7 +2937,6 @@ fn detect_hdr_display() -> (bool, String) {
         let is_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
             || std::env::var("XDG_SESSION_TYPE").map(|v| v == "wayland").unwrap_or(false);
 
-        // Parcours automatique des connecteurs GPU dans /sys/class/drm pour inspecter l'EDID physique
         let mut detected_info = None;
         if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
             for entry in entries.flatten() {
@@ -2165,6 +2958,14 @@ fn detect_hdr_display() -> (bool, String) {
 
         if let Some(info) = detected_info {
             let backend_str = if is_wayland { "Wayland natif forcé" } else { "X11" };
+            let peak_nits = if info.max_lum_nits > 0 {
+                info.max_lum_nits as f32
+            } else if info.is_hdr {
+                400.0
+            } else {
+                300.0
+            };
+
             if info.is_hdr {
                 let min_str = if info.min_lum_nits > 0.0 {
                     format!("{:.3} nits", info.min_lum_nits)
@@ -2175,28 +2976,32 @@ fn detect_hdr_display() -> (bool, String) {
                 (
                     true,
                     format!(
-                        "Écran OLED HDR {} (Pic {} nits, Noir {}, {}-bit {}) • {}",
-                        info.model_name, info.max_lum_nits, min_str, info.bits_per_channel, gamut_str, backend_str
+                        "Écran OLED HDR {} (Pic {:.0} nits, Noir {}, {}-bit {}) • {}",
+                        info.model_name, peak_nits, min_str, info.bits_per_channel, gamut_str, backend_str
                     ),
+                    peak_nits,
                 )
             } else {
                 (
                     false,
                     format!(
-                        "Écran SDR {} ({}-bit) • Rendu avec simulation dynamique • {}",
-                        info.model_name, info.bits_per_channel, backend_str
+                        "Écran SDR {} ({}-bit, {:.0} nits) • Rendu avec simulation • {}",
+                        info.model_name, info.bits_per_channel, peak_nits, backend_str
                     ),
+                    peak_nits,
                 )
             }
         } else if is_wayland {
             (
                 true,
                 "Linux (Wayland natif forcé) : Protocole Color Management / Vulkan scRGB actif".to_string(),
+                400.0,
             )
         } else {
             (
                 false,
                 "Linux (X11) : Rendu SDR avec simulation de tone-mapping dynamique actif".to_string(),
+                300.0,
             )
         }
     }
@@ -2219,7 +3024,7 @@ pub fn run_native_gui(initial_file: Option<PathBuf>) -> Result<(), eframe::Error
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1420.0, 900.0])
-            .with_min_inner_size([1040.0, 700.0])
+            .with_min_inner_size([400.0, 520.0])
             .with_title(format!("UltraHDR Studio v{} — Éditeur Photo vers JPEG Ultra HDR", env!("CARGO_PKG_VERSION")))
             .with_drag_and_drop(true),
         ..Default::default()

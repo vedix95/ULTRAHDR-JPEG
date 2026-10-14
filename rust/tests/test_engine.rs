@@ -1,8 +1,8 @@
 use ultrahdr::analyzer::analyze_image_potential;
 use ultrahdr::engine::{
-    assemble_ultra_hdr_jpeg, compute_hdr_and_gain_map, encode_gain_map_jpeg,
-    encode_rgb_jpeg, generate_nits_heatmap, simulate_hdr_on_sdr, srgb_to_linear,
-    TonalParams,
+    adapt_hdr_nits_for_display, assemble_ultra_hdr_jpeg, compute_display_headroom_weight,
+    compute_hdr_and_gain_map, encode_gain_map_jpeg, encode_rgb_jpeg, generate_nits_heatmap,
+    simulate_hdr_on_sdr, srgb_to_linear, TonalParams,
 };
 
 #[test]
@@ -86,10 +86,10 @@ fn test_sdr_simulation_and_heatmap() {
     let h = 60;
     let hdr_nits = vec![800.0f32; (w * h * 3) as usize];
 
-    let sim_aces = simulate_hdr_on_sdr(&hdr_nits, w, h, 203.0, -1.0, "aces");
+    let sim_aces = simulate_hdr_on_sdr(&hdr_nits, w, h, 203.0, 1.0, 0.75, "aces");
     assert_eq!(sim_aces.len(), (w * h * 3) as usize);
 
-    let sim_reinhard = simulate_hdr_on_sdr(&hdr_nits, w, h, 203.0, 0.0, "reinhard");
+    let sim_reinhard = simulate_hdr_on_sdr(&hdr_nits, w, h, 203.0, 1.0, 0.75, "reinhard");
     assert_eq!(sim_reinhard.len(), (w * h * 3) as usize);
 
     let heat = generate_nits_heatmap(&hdr_nits, w, h, 203.0, 1200.0);
@@ -227,12 +227,182 @@ fn test_vivid_tone_mapping_and_slider_ranges() {
 
     assert!(res_max.gain_max > 0.5);
 
-    // Test du mode de simulation "vivid" (Éclat Ultra HDR)
-    let sim_vivid = simulate_hdr_on_sdr(&res_max.hdr_nits, w, h, 203.0, 0.0, "vivid");
+    // Test du mode de simulation "vivid" (Éclat Ultra HDR) avec protection d'épaulement EDR
+    let sim_vivid = simulate_hdr_on_sdr(&res_max.hdr_nits, w, h, 203.0, 1.0, 0.75, "vivid");
     assert_eq!(sim_vivid.len(), (w * h * 3) as usize);
 
     // Les pixels SDR de base (120) ne doivent pas être assombris
     let sample_sdr = sim_vivid[(w * h - 1) as usize * 3];
     assert!(sample_sdr >= 110);
+}
+
+#[test]
+fn test_iso_21496_1_adaptive_display_headroom() {
+    let sdr_white = 203.0;
+    let export_peak_10000 = 10000.0;
+    let display_peak_400 = 400.0;
+
+    // 1. Test du calcul du facteur d'échelle proportionnel W (ISO 21496-1)
+    let w_scaled = compute_display_headroom_weight(export_peak_10000, display_peak_400, sdr_white);
+    // H_content = log2(10000 / 203) = 5.6225
+    // H_display = log2(400 / 203) = 0.9785
+    // W = 0.9785 / 5.6225 ≈ 0.174
+    assert!(w_scaled > 0.15 && w_scaled < 0.20, "W doit être proportionnel ~0.174");
+
+    // 2. Si display_peak >= content_peak, W doit être exactement 1.0
+    let w_full = compute_display_headroom_weight(400.0, 1000.0, sdr_white);
+    assert_eq!(w_full, 1.0);
+
+    // 3. Test de l'adaptation dynamique des nits
+    let w_img = 20;
+    let h_img = 20;
+    let sdr_u8 = vec![255u8; (w_img * h_img * 3) as usize];
+    let res = compute_hdr_and_gain_map(
+        &sdr_u8, None, false, w_img, h_img, export_peak_10000, sdr_white, 1.0, 1.0, 0.5,
+        TonalParams::default(), 0.0,
+    );
+
+    // Sans adaptation, le pic de luminance atteint ~10 000 nits
+    let max_unadapted = res.hdr_nits.iter().cloned().fold(0.0f32, f32::max);
+    assert!(max_unadapted > 8000.0, "La dynamique d'export doit bien atteindre 10000 nits");
+
+    // Avec adaptation proportionnelle à l'écran 400 nits
+    let adapted = adapt_hdr_nits_for_display(
+        &res.hdr_nits, &res.gain_log2, &sdr_u8, w_img, h_img,
+        export_peak_10000, display_peak_400, sdr_white,
+    );
+    let max_adapted = adapted.iter().cloned().fold(0.0f32, f32::max);
+
+    // Le pic affiché doit être borné autour de 400 nits et ne JAMAIS exploser à 10 000 nits
+    assert!(max_adapted <= 420.0, "Le pic affiché doit être borné à la capacité de l'écran (400 nits)");
+    assert!(max_adapted >= 380.0, "Le pic affiché doit exploiter toute la dynamique de l'écran");
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn test_windows_display_enum() {
+    #[repr(C)]
+    struct DisplayDeviceW {
+        cb: u32,
+        device_name: [u16; 32],
+        device_string: [u16; 128],
+        state_flags: u32,
+        device_id: [u16; 128],
+        device_key: [u16; 128],
+    }
+
+    extern "system" {
+        fn EnumDisplayDevicesW(
+            lp_device: *const u16,
+            i_dev_num: u32,
+            lp_display_device: *mut DisplayDeviceW,
+            dw_flags: u32,
+        ) -> i32;
+    }
+
+    let mut dev = DisplayDeviceW {
+        cb: std::mem::size_of::<DisplayDeviceW>() as u32,
+        device_name: [0; 32],
+        device_string: [0; 128],
+        state_flags: 0,
+        device_id: [0; 128],
+        device_key: [0; 128],
+    };
+
+    let mut found_monitors = Vec::new();
+    unsafe {
+        let mut i = 0;
+        while EnumDisplayDevicesW(std::ptr::null(), i, &mut dev, 0) != 0 {
+            if (dev.state_flags & 1) != 0 {
+                // Attached to desktop
+                let mut mon = DisplayDeviceW {
+                    cb: std::mem::size_of::<DisplayDeviceW>() as u32,
+                    device_name: [0; 32],
+                    device_string: [0; 128],
+                    state_flags: 0,
+                    device_id: [0; 128],
+                    device_key: [0; 128],
+                };
+                let mut j = 0;
+                while EnumDisplayDevicesW(dev.device_name.as_ptr(), j, &mut mon, 0) != 0 {
+                    if (mon.state_flags & 1) != 0 {
+                        let id = String::from_utf16_lossy(&mon.device_id);
+                        found_monitors.push((dev.state_flags & 4 != 0, id.trim_matches('\0').to_string()));
+                    }
+                    j += 1;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    println!("Detected connected monitors: {:?}", found_monitors);
+    assert!(!found_monitors.is_empty(), "Au moins un moniteur connecté");
+}
+
+#[test]
+fn test_apply_tonal_and_color_adjustments() {
+    let pixels = vec![
+        200u8, 100u8, 50u8,  // Pixel coloré chaud
+        40u8, 40u8, 40u8,    // Ombre profonde
+        220u8, 220u8, 220u8, // Haute lumière
+    ];
+
+    // 1. Saturation à -1.0 doit rendre l'image rigoureusement monochrome (R == G == B)
+    let mono_params = TonalParams {
+        saturation: -1.0,
+        ..Default::default()
+    };
+    let mono = ultrahdr::engine::apply_tonal_and_color_adjustments(&pixels, &mono_params);
+    assert_eq!(mono[0], mono[1], "R doit être égal à G en monochrome");
+    assert_eq!(mono[1], mono[2], "G doit être égal à B en monochrome");
+
+    // 2. Ombres positives doivent éclaircir l'ombre profonde (40) sans toucher la haute lumière
+    let shadow_params = TonalParams {
+        shadows: 0.8,
+        ..Default::default()
+    };
+    let lifted = ultrahdr::engine::apply_tonal_and_color_adjustments(&pixels, &shadow_params);
+    assert!(lifted[3] > pixels[3], "L'ombre doit être débouchée");
+    assert!((lifted[6] as i32 - pixels[6] as i32).abs() <= 2, "La haute lumière ne doit pas bouger");
+
+    // 3. Contraste positif doit creuser les ombres et monter les hautes lumières
+    let contrast_params = TonalParams {
+        contrast: 0.8,
+        ..Default::default()
+    };
+    let contrasted = ultrahdr::engine::apply_tonal_and_color_adjustments(&pixels, &contrast_params);
+    assert!(contrasted[3] < pixels[3], "L'ombre doit être densifiée");
+    assert!(contrasted[6] >= pixels[6], "La haute lumière doit être rehaussée");
+}
+
+#[test]
+fn test_edr_no_clipping_at_extreme_nits() {
+    // 4 zones de test : SDR blanc (203 nits), HDR modéré (1000 nits), HDR fort (4000 nits), HDR extrême (10000 nits)
+    let nits_levels = [203.0f32, 1000.0, 4000.0, 10000.0];
+    let mut hdr_nits = Vec::new();
+    for &n in &nits_levels {
+        hdr_nits.push(n);
+        hdr_nits.push(n);
+        hdr_nits.push(n);
+    }
+
+    let sim_vivid = simulate_hdr_on_sdr(&hdr_nits, 4, 1, 203.0, 1.0, 0.75, "vivid");
+    let v_sdr = sim_vivid[0];
+    let v_1k = sim_vivid[3];
+    let v_4k = sim_vivid[6];
+    let v_10k = sim_vivid[9];
+
+    // Vérification de la stricte monotonie sans aucun cramage plat
+    assert!(v_sdr < v_1k, "1000 nits doit être plus éclatant que 203 nits");
+    assert!(v_1k < v_4k, "4000 nits doit être plus éclatant que 1000 nits");
+    assert!(v_4k <= v_10k, "10000 nits ne doit pas régresser");
+    assert!(v_1k < 255, "1000 nits ne doit pas être cramé à 255");
+
+    let sim_natural = simulate_hdr_on_sdr(&hdr_nits, 4, 1, 203.0, 1.0, 0.75, "natural");
+    assert!(sim_natural[0] < sim_natural[3]);
+    assert!(sim_natural[3] < sim_natural[6]);
+    assert!(sim_natural[6] <= sim_natural[9]);
+    assert!(sim_natural[3] < 255);
 }
 

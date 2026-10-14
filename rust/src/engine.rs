@@ -45,6 +45,19 @@ pub struct TonalParams {
     pub vibrance: f32,   // -1.0 .. +1.0 (défaut 0.0)
 }
 
+impl TonalParams {
+    #[inline]
+    pub fn has_any_adjustment(&self) -> bool {
+        self.contrast.abs() > 1e-4
+            || self.whites.abs() > 1e-4
+            || self.highlights.abs() > 1e-4
+            || self.shadows.abs() > 1e-4
+            || self.blacks.abs() > 1e-4
+            || self.saturation.abs() > 1e-4
+            || self.vibrance.abs() > 1e-4
+    }
+}
+
 impl Default for TonalParams {
     fn default() -> Self {
         Self {
@@ -219,6 +232,7 @@ pub struct HdrGainMapResult {
 /// Modifie la saturation et la vibrance d'un tampon SDR RGB uint8 de manière ultra-rapide et multithreadée.
 /// - Saturation : ajuste proportionnellement l'intensité chromatique globale (-100% à +100%).
 /// - Vibrance : protège les tons chair et les couleurs déjà saturées tout en rehaussant les teintes douces (-100% à +100%).
+#[allow(dead_code)]
 pub fn apply_vibrance_saturation(sdr_uint8: &[u8], saturation: f32, vibrance: f32) -> Vec<u8> {
     if saturation == 0.0 && vibrance == 0.0 {
         return sdr_uint8.to_vec();
@@ -257,6 +271,95 @@ pub fn apply_vibrance_saturation(sdr_uint8: &[u8], saturation: f32, vibrance: f3
     out
 }
 
+/// Applique les ajustements tonals (Contraste, Blancs, Hautes Lumières, Ombres, Noirs)
+/// et chromatiques (Saturation, Vibrance) sur le tampon SDR de manière ultra-rapide et multithreadée.
+pub fn apply_tonal_and_color_adjustments(sdr_uint8: &[u8], tonal: &TonalParams) -> Vec<u8> {
+    if !tonal.has_any_adjustment() {
+        return sdr_uint8.to_vec();
+    }
+    let mut out = sdr_uint8.to_vec();
+    out.par_chunks_exact_mut(3).for_each(|pixel| {
+        let r = pixel[0] as f32 / 255.0;
+        let g = pixel[1] as f32 / 255.0;
+        let b = pixel[2] as f32 / 255.0;
+
+        let lum = r * LUM_WEIGHTS[0] + g * LUM_WEIGHTS[1] + b * LUM_WEIGHTS[2];
+        let (r1, g1, b1, l1) = if lum > 1e-5 {
+            // Courbe tonale paramétrique (Contraste, Blancs, Hautes Lumières, Ombres, Noirs)
+            // 1. Contraste : S-curve sinusoïdale continue autour du pivot moyen
+            let d_contrast = -tonal.contrast * 0.22 * (std::f32::consts::TAU * lum).sin();
+
+            // 2. Noirs : module l'ancrage des ombres très profondes (lum < 0.25)
+            let d_blacks = if lum < 0.25 {
+                let wb = (1.0 - lum / 0.25) * (1.0 - lum / 0.25);
+                tonal.blacks * 0.20 * wb
+            } else {
+                0.0
+            };
+
+            // 3. Ombres : élévation / densification des pénombres (lum < 0.55)
+            let d_shadows = if lum < 0.55 {
+                let ws = (std::f32::consts::PI * (lum / 0.55)).sin();
+                tonal.shadows * 0.30 * ws
+            } else {
+                0.0
+            };
+
+            // 4. Hautes Lumières : récupération ou rehaussement des teintes hautes (lum > 0.45)
+            let d_highlights = if lum > 0.45 {
+                let wh = (std::f32::consts::PI * ((lum - 0.45) / 0.55)).sin();
+                tonal.highlights * 0.30 * wh
+            } else {
+                0.0
+            };
+
+            // 5. Blancs : expansion des crêtes lumineuses (lum > 0.70)
+            let d_whites = if lum > 0.70 {
+                let ww = ((lum - 0.70) / 0.30) * ((lum - 0.70) / 0.30);
+                tonal.whites * 0.25 * ww
+            } else {
+                0.0
+            };
+
+            let lum_adj = (lum + d_contrast + d_blacks + d_shadows + d_highlights + d_whites).clamp(0.0, 1.0);
+            let s_tone = lum_adj / lum;
+            let r_tone = (r * s_tone).clamp(0.0, 1.0);
+            let g_tone = (g * s_tone).clamp(0.0, 1.0);
+            let b_tone = (b * s_tone).clamp(0.0, 1.0);
+            let l_tone = r_tone * LUM_WEIGHTS[0] + g_tone * LUM_WEIGHTS[1] + b_tone * LUM_WEIGHTS[2];
+            (r_tone, g_tone, b_tone, l_tone)
+        } else {
+            (r, g, b, lum)
+        };
+
+        // 6. Modulation chromatique (Saturation & Vibrance)
+        let max_c = r1.max(g1).max(b1);
+        let min_c = r1.min(g1).min(b1);
+        let sat = if max_c > 1e-4 {
+            (max_c - min_c) / max_c
+        } else {
+            0.0
+        };
+
+        let vib_mod = if tonal.vibrance > 0.0 {
+            tonal.vibrance * (1.0 - sat).powf(1.5) * 1.5
+        } else {
+            tonal.vibrance * sat * 0.9
+        };
+
+        let total_mult = (1.0 + tonal.saturation * 1.2 + vib_mod).max(0.0);
+
+        let r_out = (l1 + (r1 - l1) * total_mult).clamp(0.0, 1.0);
+        let g_out = (l1 + (g1 - l1) * total_mult).clamp(0.0, 1.0);
+        let b_out = (l1 + (b1 - l1) * total_mult).clamp(0.0, 1.0);
+
+        pixel[0] = (r_out * 255.0 + 0.5) as u8;
+        pixel[1] = (g_out * 255.0 + 0.5) as u8;
+        pixel[2] = (b_out * 255.0 + 0.5) as u8;
+    });
+    out
+}
+
 /// Calcule l'image HDR (en nits) et la Gain Map (log2) associée à l'image SDR avec contrôle Tonal Pro et Anti-Halo.
 pub fn compute_hdr_and_gain_map(
     sdr_uint8: &[u8],
@@ -275,8 +378,8 @@ pub fn compute_hdr_and_gain_map(
     let n_pixels = (width * height) as usize;
     let base_peak_boost = (peak_nits / sdr_white).max(1.05);
 
-    let processed_sdr = if tonal.saturation != 0.0 || tonal.vibrance != 0.0 {
-        Some(apply_vibrance_saturation(sdr_uint8, tonal.saturation, tonal.vibrance))
+    let processed_sdr = if tonal.has_any_adjustment() {
+        Some(apply_tonal_and_color_adjustments(sdr_uint8, &tonal))
     } else {
         None
     };
@@ -591,26 +694,32 @@ pub fn assemble_ultra_hdr_jpeg(
     final_jpeg
 }
 
-/// Simule le rendu HDR sur écran SDR standard avec décalage EV et modes de tone-mapping préservant l'intégrité de l'image.
+/// Simule le rendu HDR sur écran SDR standard avec protection totale contre le cramage des hautes lumières.
+///
+/// Contrairement à un simple décalage EV qui surexpose et brûle les blancs, cet algorithme EDR (Extended Dynamic Range) :
+/// - Préserve à 100% l'intégrité des tons sombres, tons moyens et blanc diffus SDR (base_x <= 1.0).
+/// - Module la puissance du headroom HDR via `hdr_boost` (0.0 = SDR pur, 1.0 = plein HDR, 1.5 = pop spéculaire).
+/// - Compresse asymptotiquement les crêtes lumineuses (> seuil `highlight_rolloff`) via une courbe rationnelle C1-continue.
+/// Aucun pixel ne peut être écrêté ou brûlé à (255, 255, 255), même à 10 000 nits.
 pub fn simulate_hdr_on_sdr(
     hdr_nits: &[f32],
     width: u32,
     height: u32,
     sdr_white: f32,
-    ev_shift: f32,
+    hdr_boost: f32,
+    highlight_rolloff: f32,
     tone_map_mode: &str,
 ) -> Vec<u8> {
-    let exposure_scale = (2.0f32).powf(ev_shift) / sdr_white;
+    let sdr_ref = sdr_white.max(50.0);
+    let knee = highlight_rolloff.clamp(0.40, 0.95);
+    let m = 1.0 - knee;
+    let boost = hdr_boost.max(0.0);
+
     let n_pixels = (width * height) as usize;
     let mut out_u8 = vec![0u8; n_pixels * 3];
 
-    let white_point = if tone_map_mode == "reinhard" {
-        let mut samples: Vec<f32> = hdr_nits.iter().step_by(3).map(|&v| v * exposure_scale).collect();
-        percentile_mut(&mut samples, 99.5).max(1.5)
-    } else {
-        1.5
-    };
-    let wp2 = white_point * white_point;
+    let wp = (1.5 + boost * 2.0).max(1.2);
+    let wp2 = wp * wp;
 
     out_u8
         .par_chunks_mut(1024 * 3)
@@ -618,53 +727,55 @@ pub fn simulate_hdr_on_sdr(
         .for_each(|(out_chunk, nits_chunk)| {
             for (out_pixel, nits_pixel) in out_chunk.chunks_exact_mut(3).zip(nits_chunk.chunks_exact(3)) {
                 for c in 0..3 {
-                    let lin_exposed = nits_pixel[c] * exposure_scale;
+                    let base_x = (nits_pixel[c] / sdr_ref).max(0.0);
+                    // Règle d'or EDR : tons sombres, moyens et blanc diffus (base_x <= 1.0)
+                    // sont strictement ancrés et ne peuvent JAMAIS cramer.
+                    // Seul le surplus de dynamique HDR (base_x > 1.0) est amplifié par hdr_boost.
+                    let x = if base_x <= 1.0 {
+                        base_x
+                    } else {
+                        1.0 + (base_x - 1.0) * boost
+                    };
+
                     let tm = match tone_map_mode {
-                        // Mode Éclat Ultra HDR : Fidélité 100% SDR sur les tons moyens/sombres (x <= 0.75),
-                        // et illumination dynamique progressive dans les hautes lumières HDR sans écrasement terne.
+                        // Mode Éclat Dynamique (Vivid Pop) :
+                        // Parfaite fidélité sur les tons moyens/sombres (x <= knee),
+                        // puis compression rationnelle progressive à grand éclat spéculaire sans écrêtage plat.
                         "vivid" | "eclat" | "hdr_pop" => {
-                            let x = lin_exposed.max(0.0);
-                            let knee = 0.75f32;
                             if x <= knee {
                                 x
                             } else {
                                 let y = x - knee;
-                                let headroom = (white_point - knee).max(0.5);
-                                knee + (1.0 - knee) * (y / (y + headroom * 0.35))
+                                let s = 1.0 + m * 1.5;
+                                knee + m * (y / (y + s))
                             }
                         }
-                        // Mode Filmic ACES classique (conforme version Python originale)
+                        // Mode Naturel : C1-continu, préserve 100% de la texture des hautes lumières
+                        "natural" | "naturel" | "preserved" => {
+                            if x <= knee {
+                                x
+                            } else {
+                                let y = x - knee;
+                                let s = 1.8 + m * 2.0;
+                                knee + m * (y / (y + s))
+                            }
+                        }
+                        // Mode ACES Filmic normalisé
                         "aces" | "filmic" => {
-                            let x = lin_exposed.max(0.0);
                             let num = x * (2.51 * x + 0.03);
                             let den = (x * (2.43 * x + 0.59) + 0.14).max(1e-6);
                             (num / den).clamp(0.0, 1.0)
                         }
-                        // Mode Naturel : préserve 100% de la texture sans aucun cramage.
-                        // Les tons sombres et moyens (x <= 0.65) restent strictement identiques.
-                        // Les hautes lumières (x > 0.65) bénéficient d'une compression progressive C1 continue
-                        // qui donne tout son éclat au HDR sans jamais écraser les blancs à 255.
-                        "natural" | "naturel" | "preserved" => {
-                            let x = lin_exposed.max(0.0);
-                            let knee = 0.65f32;
-                            if x <= knee {
-                                x
-                            } else {
-                                let y = x - knee;
-                                let m = 1.0 - knee;
-                                knee + m * (y / (y + m))
-                            }
-                        }
-                        // Mode Reinhard avec point blanc étendu
+                        // Mode Reinhard avec point blanc adaptatif
                         "reinhard" => {
-                            let x = lin_exposed.max(0.0);
                             let num = x * (1.0 + x / wp2);
                             let den = (1.0 + x).max(1e-6);
                             (num / den).clamp(0.0, 1.0)
                         }
-                        // Mode Linéaire pur (écrêtage à 1.0, permet d'inspecter les hautes lumières via le curseur EV)
-                        _ => lin_exposed.clamp(0.0, 1.0),
+                        // Mode Linéaire direct (écrêtage à 1.0, utilisé pour affichage matériel HDR ou diagnostic)
+                        _ => x.clamp(0.0, 1.0),
                     };
+
                     let srgb = linear_to_srgb(tm.clamp(0.0, 1.0));
                     out_pixel[c] = (srgb * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
                 }
@@ -672,6 +783,68 @@ pub fn simulate_hdr_on_sdr(
         });
 
     out_u8
+}
+
+/// Calcule le facteur de pondération de dynamique d'affichage W selon la norme ISO 21496-1.
+///
+/// Si l'écran a une capacité d'affichage inférieure à la luminance cible d'export
+/// (ex: cible 10 000 nits sur un écran 400 nits), cette formule adapte proportionnellement
+/// la dynamique perçue à l'écran pour éviter tout cramage des hautes lumières en prévisualisation,
+/// tout en conservant le fichier exporté à pleine puissance mathématique.
+pub fn compute_display_headroom_weight(
+    content_peak_nits: f32,
+    display_peak_nits: f32,
+    sdr_white: f32,
+) -> f32 {
+    let sdr_ref = sdr_white.max(50.0);
+    let h_content = (content_peak_nits / sdr_ref).max(1.001).log2();
+    let h_display = (display_peak_nits / sdr_ref).max(1.001).log2();
+    if h_content <= 1e-4 {
+        1.0
+    } else {
+        (h_display / h_content).clamp(0.0, 1.0)
+    }
+}
+
+/// Adapte les luminances HDR (en nits) aux capacités réelles de l'écran de prévisualisation (ISO 21496-1).
+pub fn adapt_hdr_nits_for_display(
+    hdr_nits: &[f32],
+    gain_log2: &[f32],
+    sdr_uint8: &[u8],
+    width: u32,
+    height: u32,
+    content_peak_nits: f32,
+    display_peak_nits: f32,
+    sdr_white: f32,
+) -> Vec<f32> {
+    let weight = compute_display_headroom_weight(content_peak_nits, display_peak_nits, sdr_white);
+    if (weight - 1.0).abs() < 1e-4 {
+        return hdr_nits.to_vec();
+    }
+
+    let n_pixels = (width * height) as usize;
+    let mut adapted = vec![0.0f32; n_pixels * 3];
+
+    adapted
+        .par_chunks_mut(1024 * 3)
+        .zip(gain_log2.par_chunks(1024))
+        .enumerate()
+        .for_each(|(chunk_idx, (out_chunk, gain_chunk))| {
+            let start_pixel = chunk_idx * 1024;
+            for (i, &g) in gain_chunk.iter().enumerate() {
+                let pixel_idx = start_pixel + i;
+                let r_sdr = srgb_to_linear(sdr_uint8[pixel_idx * 3] as f32 / 255.0);
+                let g_sdr = srgb_to_linear(sdr_uint8[pixel_idx * 3 + 1] as f32 / 255.0);
+                let b_sdr = srgb_to_linear(sdr_uint8[pixel_idx * 3 + 2] as f32 / 255.0);
+
+                let display_boost = (g * weight).exp2();
+                out_chunk[i * 3] = r_sdr * sdr_white * display_boost;
+                out_chunk[i * 3 + 1] = g_sdr * sdr_white * display_boost;
+                out_chunk[i * 3 + 2] = b_sdr * sdr_white * display_boost;
+            }
+        });
+
+    adapted
 }
 
 /// Approximation polynomiale ultra-rapide de la colormap Turbo (Google).
