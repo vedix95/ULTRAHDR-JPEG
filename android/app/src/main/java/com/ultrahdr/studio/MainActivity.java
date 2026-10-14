@@ -19,7 +19,7 @@ import java.io.OutputStream;
 public class MainActivity extends NativeActivity {
     private static final String TAG = "UltraHDR_MainActivity";
     private static final int PICK_IMAGE_REQUEST = 1001;
-    private static MainActivity instance;
+    public static MainActivity instance;
 
     // Dernier fichier exporté
     private static String lastExportedPath = null;
@@ -171,65 +171,114 @@ public class MainActivity extends NativeActivity {
     }
 
     /**
+     * Méthode statique d'accès direct depuis Rust via JNI si besoin.
+     */
+    public static String saveExport(byte[] data, String fileName) {
+        if (instance != null) {
+            return instance.saveExportToDcim(data, fileName);
+        } else {
+            Log.e(TAG, "saveExport: instance de MainActivity est null !");
+            return null;
+        }
+    }
+
+    /**
      * Enregistre les octets de l'image Ultra HDR dans DCIM/ULTRAHDR-STUDIO.
      * Utilise MediaStore (Scoped Storage) compatible Android 10, 11, 12, 13, 14, 15.
+     * Si MediaStore échoue, utilise l'écriture directe en fichier public ou app files.
      * Retourne le chemin absolu du fichier enregistré, ou null.
      */
     public String saveExportToDcim(byte[] data, String fileName) {
+        Log.i(TAG, "saveExportToDcim démarré pour: " + fileName + ", taille: " + (data != null ? data.length : 0) + " octets");
+        if (data == null || data.length == 0) {
+            Log.e(TAG, "saveExportToDcim: données reçues nulles ou vides");
+            return null;
+        }
+
         try {
             ContentResolver resolver = getContentResolver();
             Uri imageUri = null;
-            String relativeDir = Environment.DIRECTORY_DCIM + "/ULTRAHDR-STUDIO";
+            String outPath = null;
 
+            // ── Stratégie 1 : MediaStore Scoped Storage officiel (Android 10+) ──
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
-                values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-                values.put(MediaStore.Images.Media.RELATIVE_PATH, relativeDir);
-                values.put(MediaStore.Images.Media.IS_PENDING, 1);
+                try {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
+                    values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+                    // Note: Le chemin relatif DOIT impérativement se terminer par un slash '/' sur Android
+                    values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/ULTRAHDR-STUDIO/");
+                    values.put(MediaStore.Images.Media.IS_PENDING, 1);
 
-                imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-                if (imageUri != null) {
-                    OutputStream os = resolver.openOutputStream(imageUri);
-                    if (os != null) {
-                        os.write(data);
-                        os.flush();
-                        os.close();
+                    imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                    if (imageUri != null) {
+                        OutputStream os = resolver.openOutputStream(imageUri);
+                        if (os != null) {
+                            os.write(data);
+                            os.flush();
+                            os.close();
+                        }
+                        values.clear();
+                        values.put(MediaStore.Images.Media.IS_PENDING, 0);
+                        resolver.update(imageUri, values, null, null);
+                        Log.i(TAG, "Stratégie 1 (MediaStore DCIM/ULTRAHDR-STUDIO/) réussie: " + imageUri);
                     }
-                    values.clear();
-                    values.put(MediaStore.Images.Media.IS_PENDING, 0);
-                    resolver.update(imageUri, values, null, null);
+                } catch (Exception e1) {
+                    Log.w(TAG, "Stratégie 1 (MediaStore) a échoué: " + e1.getMessage());
                 }
-            } else {
-                File dcimDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "ULTRAHDR-STUDIO");
-                if (!dcimDir.exists()) {
-                    dcimDir.mkdirs();
-                }
-                File outFile = new File(dcimDir, fileName);
-                FileOutputStream fos = new FileOutputStream(outFile);
-                fos.write(data);
-                fos.flush();
-                fos.close();
-
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.Images.Media.DATA, outFile.getAbsolutePath());
-                values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-                imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
             }
 
-            File publicFile = new File("/sdcard/DCIM/ULTRAHDR-STUDIO", fileName);
-            String finalPath = publicFile.getAbsolutePath();
+            // ── Stratégie 2 : Écriture directe dans le dossier public /sdcard/DCIM/ULTRAHDR-STUDIO ──
+            if (imageUri == null) {
+                try {
+                    File dcimDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "ULTRAHDR-STUDIO");
+                    if (!dcimDir.exists()) {
+                        dcimDir.mkdirs();
+                    }
+                    File outFile = new File(dcimDir, fileName);
+                    FileOutputStream fos = new FileOutputStream(outFile);
+                    fos.write(data);
+                    fos.flush();
+                    fos.close();
+                    outPath = outFile.getAbsolutePath();
+                    Log.i(TAG, "Stratégie 2 (Fichier direct DCIM) réussie: " + outPath);
+                } catch (Exception e2) {
+                    Log.w(TAG, "Stratégie 2 (Fichier direct DCIM) a échoué: " + e2.getMessage());
+                }
+            }
 
+            // ── Stratégie 3 : Écriture dans le dossier Pictures garanti de l'application ──
+            if (imageUri == null && outPath == null) {
+                try {
+                    File picDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+                    if (picDir != null) {
+                        if (!picDir.exists()) picDir.mkdirs();
+                        File outFile = new File(picDir, fileName);
+                        FileOutputStream fos = new FileOutputStream(outFile);
+                        fos.write(data);
+                        fos.flush();
+                        fos.close();
+                        outPath = outFile.getAbsolutePath();
+                        Log.i(TAG, "Stratégie 3 (Pictures applicatif) réussie: " + outPath);
+                    }
+                } catch (Exception e3) {
+                    Log.e(TAG, "Stratégie 3 (Pictures applicatif) a échoué: " + e3.getMessage());
+                }
+            }
+
+            String finalPath = outPath != null ? outPath : new File("/sdcard/DCIM/ULTRAHDR-STUDIO", fileName).getAbsolutePath();
             lastExportedPath = finalPath;
             lastExportedUri = imageUri;
 
-            // Scanner le fichier pour que l'album apparaisse immédiatement dans la Galerie Android
-            MediaScannerConnection.scanFile(this, new String[] { finalPath }, new String[] { "image/jpeg" }, null);
+            // Notifier le scanner de médias pour que l'album apparaisse immédiatement dans la Galerie
+            try {
+                MediaScannerConnection.scanFile(this, new String[] { finalPath }, new String[] { "image/jpeg" }, null);
+            } catch (Exception ignored) {}
 
-            Log.i(TAG, "Export Ultra HDR réussi dans DCIM/ULTRAHDR-STUDIO: " + finalPath + ", Uri: " + imageUri);
+            Log.i(TAG, "Export Ultra HDR achevé avec succès : " + finalPath + " (Uri: " + imageUri + ")");
             return finalPath;
         } catch (Exception e) {
-            Log.e(TAG, "Erreur saveExportToDcim: " + e.getMessage(), e);
+            Log.e(TAG, "Erreur globale saveExportToDcim: " + e.getMessage(), e);
             return null;
         }
     }
