@@ -105,10 +105,17 @@ jobs:
       - name: Install cargo-apk
         run: cargo install cargo-apk
 
+      - name: Configure Android SDK & Install Platforms
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-34" "platforms;android-30" "build-tools;34.0.0"
+
       - name: Build Android Release APK
+        env:
+          ANDROID_SDK_ROOT: ""
         run: |
           cd rust
-          cargo apk build --release
+          cargo apk build --release --lib
 
       - name: Package & Verify APK
         run: |

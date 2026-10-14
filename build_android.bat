@@ -28,7 +28,7 @@ where cargo-apk >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
     echo [*] Lancement du build via cargo-apk...
     cd rust
-    cargo apk build --release
+    cargo apk build --release --lib
     if %ERRORLEVEL% EQU 0 (
         echo.
         echo [OK] APK genere avec succes dans :

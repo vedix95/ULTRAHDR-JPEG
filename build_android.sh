@@ -18,7 +18,7 @@ fi
 if command -v cargo-apk &> /dev/null; then
     echo "[*] Compilation avec cargo-apk..."
     cd rust
-    cargo apk build --release
+    cargo apk build --release --lib
     echo ""
     echo "[OK] APK généré : rust/target/release/apk/ultrahdr-studio.apk"
     exit 0

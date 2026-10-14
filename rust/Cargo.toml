@@ -36,9 +36,12 @@ label = "UltraHDR Studio"
 apk_name = "ultrahdr-studio"
 assets = "assets"
 build_targets = ["aarch64-linux-android"]
+icon = "@mipmap/ic_launcher"
+
+[package.metadata.android.sdk]
 min_sdk_version = 26
 target_sdk_version = 34
-icon = "@mipmap/ic_launcher"
+
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.READ_MEDIA_IMAGES"
