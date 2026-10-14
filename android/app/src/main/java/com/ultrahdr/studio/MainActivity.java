@@ -1,23 +1,37 @@
 package com.ultrahdr.studio;
 
 import android.app.NativeActivity;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Intent;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.util.Log;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 
 public class MainActivity extends NativeActivity {
     private static final String TAG = "UltraHDR_MainActivity";
     private static final int PICK_IMAGE_REQUEST = 1001;
     private static MainActivity instance;
 
+    // Dernier fichier exporté
+    private static String lastExportedPath = null;
+    private static Uri lastExportedUri = null;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         instance = this;
+        try {
+            android.os.StrictMode.setVmPolicy(new android.os.StrictMode.VmPolicy.Builder().build());
+        } catch (Exception ignored) {}
         Log.i(TAG, "UltraHDR Studio MainActivity onCreate démarré avec succès.");
         handleIncomingIntent(getIntent());
     }
@@ -50,13 +64,11 @@ public class MainActivity extends NativeActivity {
 
         Uri uri = null;
         if (Intent.ACTION_SEND.equals(action)) {
-            // Reçu depuis le menu 'Partager' d'une autre application (Google Photos, Galerie, etc.)
             uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
             if (uri == null && intent.getClipData() != null && intent.getClipData().getItemCount() > 0) {
                 uri = intent.getClipData().getItemAt(0).getUri();
             }
         } else if (Intent.ACTION_VIEW.equals(action)) {
-            // Reçu depuis "Ouvrir avec..." ou un explorateur de fichiers
             uri = intent.getData();
         }
 
@@ -67,7 +79,7 @@ public class MainActivity extends NativeActivity {
     }
 
     /**
-     * Méthode d'instance appelée directement depuis Rust via JNI.
+     * Méthode d'instance appelée directement depuis Rust via JNI pour le sélecteur.
      */
     public void openPicker() {
         runOnUiThread(new Runnable() {
@@ -78,14 +90,9 @@ public class MainActivity extends NativeActivity {
         });
     }
 
-    /**
-     * Méthode statique de secours appelée depuis Rust via JNI si besoin.
-     */
     public static void openImagePicker() {
         if (instance != null) {
             instance.openPicker();
-        } else {
-            Log.e(TAG, "Impossible d'ouvrir le sélecteur: instance null");
         }
     }
 
@@ -153,8 +160,6 @@ public class MainActivity extends NativeActivity {
                         is.close();
 
                         Log.i(TAG, "Photo écrite dans le cache: " + outFile.getAbsolutePath() + " (" + outFile.length() + " octets)");
-
-                        // Signalement atomique à l'application Rust
                         File flag = new File(cacheDir, "photo_ready.flag");
                         flag.createNewFile();
                     }
@@ -163,5 +168,143 @@ public class MainActivity extends NativeActivity {
                 }
             }
         }).start();
+    }
+
+    /**
+     * Enregistre les octets de l'image Ultra HDR dans DCIM/ULTRAHDR-STUDIO.
+     * Utilise MediaStore (Scoped Storage) compatible Android 10, 11, 12, 13, 14, 15.
+     * Retourne le chemin absolu du fichier enregistré, ou null.
+     */
+    public String saveExportToDcim(byte[] data, String fileName) {
+        try {
+            ContentResolver resolver = getContentResolver();
+            Uri imageUri = null;
+            String relativeDir = Environment.DIRECTORY_DCIM + "/ULTRAHDR-STUDIO";
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
+                values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, relativeDir);
+                values.put(MediaStore.Images.Media.IS_PENDING, 1);
+
+                imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                if (imageUri != null) {
+                    OutputStream os = resolver.openOutputStream(imageUri);
+                    if (os != null) {
+                        os.write(data);
+                        os.flush();
+                        os.close();
+                    }
+                    values.clear();
+                    values.put(MediaStore.Images.Media.IS_PENDING, 0);
+                    resolver.update(imageUri, values, null, null);
+                }
+            } else {
+                File dcimDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "ULTRAHDR-STUDIO");
+                if (!dcimDir.exists()) {
+                    dcimDir.mkdirs();
+                }
+                File outFile = new File(dcimDir, fileName);
+                FileOutputStream fos = new FileOutputStream(outFile);
+                fos.write(data);
+                fos.flush();
+                fos.close();
+
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Images.Media.DATA, outFile.getAbsolutePath());
+                values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+                imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            }
+
+            File publicFile = new File("/sdcard/DCIM/ULTRAHDR-STUDIO", fileName);
+            String finalPath = publicFile.getAbsolutePath();
+
+            lastExportedPath = finalPath;
+            lastExportedUri = imageUri;
+
+            // Scanner le fichier pour que l'album apparaisse immédiatement dans la Galerie Android
+            MediaScannerConnection.scanFile(this, new String[] { finalPath }, new String[] { "image/jpeg" }, null);
+
+            Log.i(TAG, "Export Ultra HDR réussi dans DCIM/ULTRAHDR-STUDIO: " + finalPath + ", Uri: " + imageUri);
+            return finalPath;
+        } catch (Exception e) {
+            Log.e(TAG, "Erreur saveExportToDcim: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
+    /**
+     * Notifie le MediaScanner d'Android si le fichier a été écrit directement par Rust.
+     */
+    public void notifyMediaScan(String filePath) {
+        lastExportedPath = filePath;
+        MediaScannerConnection.scanFile(this, new String[] { filePath }, new String[] { "image/jpeg" },
+            new MediaScannerConnection.OnScanCompletedListener() {
+                @Override
+                public void onScanCompleted(String path, Uri uri) {
+                    lastExportedUri = uri;
+                    Log.i(TAG, "MediaScanner terminé pour: " + path + " -> " + uri);
+                }
+            });
+    }
+
+    /**
+     * Ouvre la photo exportée dans l'application Galerie / Photos par défaut.
+     */
+    public void viewExportedImage() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Intent intent = new Intent(Intent.ACTION_VIEW);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    if (lastExportedUri != null) {
+                        intent.setDataAndType(lastExportedUri, "image/jpeg");
+                    } else if (lastExportedPath != null) {
+                        File file = new File(lastExportedPath);
+                        intent.setDataAndType(Uri.fromFile(file), "image/jpeg");
+                    } else {
+                        File file = new File("/sdcard/DCIM/ULTRAHDR-STUDIO");
+                        intent.setDataAndType(Uri.fromFile(file), "image/*");
+                    }
+                    startActivity(Intent.createChooser(intent, "Ouvrir l'image Ultra HDR"));
+                } catch (Exception e) {
+                    Log.e(TAG, "Erreur viewExportedImage: " + e.getMessage(), e);
+                }
+            }
+        });
+    }
+
+    /**
+     * Ouvre le dossier DCIM/ULTRAHDR-STUDIO dans l'explorateur de fichiers.
+     */
+    public void viewExportedFolder() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Intent intent = new Intent(Intent.ACTION_VIEW);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    Uri folderUri = Uri.parse("content://com.android.externalstorage.documents/document/primary%3ADCIM%2FULTRAHDR-STUDIO");
+                    intent.setDataAndType(folderUri, "resource/folder");
+                    if (intent.resolveActivity(getPackageManager()) == null) {
+                        intent.setDataAndType(folderUri, "*/*");
+                    }
+                    startActivity(Intent.createChooser(intent, "Ouvrir le dossier DCIM/ULTRAHDR-STUDIO"));
+                } catch (Exception e) {
+                    Log.w(TAG, "Tentative DocumentsProvider échouée: " + e.getMessage() + ", repli vers sélecteur...");
+                    try {
+                        Intent fallbackIntent = new Intent(Intent.ACTION_VIEW);
+                        fallbackIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        File folder = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "ULTRAHDR-STUDIO");
+                        fallbackIntent.setDataAndType(Uri.fromFile(folder), "*/*");
+                        startActivity(Intent.createChooser(fallbackIntent, "Ouvrir le dossier DCIM/ULTRAHDR-STUDIO"));
+                    } catch (Exception e2) {
+                        Log.e(TAG, "Erreur viewExportedFolder: " + e2.getMessage(), e2);
+                    }
+                }
+            }
+        });
     }
 }

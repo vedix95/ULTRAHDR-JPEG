@@ -168,6 +168,16 @@ pub struct UltraHdrApp {
     bottom_panel_visible: bool,
     compare_toggled: bool,
     pub active_config_pane: ConfigPane,
+    export_success_modal: Option<ExportSuccessInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportSuccessInfo {
+    pub file_path: String,
+    pub folder_path: String,
+    pub file_size_kb: usize,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl UltraHdrApp {
@@ -256,6 +266,7 @@ impl UltraHdrApp {
             bottom_panel_visible: true,
             compare_toggled: false,
             active_config_pane: ConfigPane::Tonal,
+            export_success_modal: None,
         }
     }
 
@@ -410,6 +421,128 @@ pub fn trigger_android_photo_picker() {
     }
 }
 
+#[cfg(target_os = "android")]
+pub fn trigger_android_save_export(bytes: &[u8], filename: &str) -> Option<String> {
+    let ctx = ndk_context::android_context();
+    let vm_ptr = ctx.vm();
+    let activity_ptr = ctx.context();
+    if vm_ptr.is_null() || activity_ptr.is_null() {
+        return None;
+    }
+    unsafe {
+        if let Ok(vm) = jni::JavaVM::from_raw(vm_ptr as *mut _) {
+            if let Ok(mut env) = vm.attach_current_thread() {
+                let activity_obj = jni::objects::JObject::from_raw(activity_ptr as *mut _);
+                if !activity_obj.as_raw().is_null() {
+                    if let (Ok(j_bytes), Ok(j_filename)) = (env.byte_array_from_slice(bytes), env.new_string(filename)) {
+                        let sig = "([BLjava/lang/String;)Ljava/lang/String;";
+                        let res = env.call_method(
+                            &activity_obj,
+                            "saveExportToDcim",
+                            sig,
+                            &[jni::objects::JValue::Object(&j_bytes.into()), jni::objects::JValue::Object(&j_filename.into())],
+                        );
+                        if let Ok(val) = res {
+                            if let Ok(obj) = val.l() {
+                                if !obj.as_raw().is_null() {
+                                    let jstr = jni::objects::JString::from(obj);
+                                    let out_str = env.get_string(&jstr).ok().map(|s| s.to_string_lossy().to_string());
+                                    if env.exception_check().unwrap_or(false) {
+                                        let _ = env.exception_clear();
+                                    }
+                                    if let Some(out) = out_str {
+                                        return Some(out);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_clear();
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "android")]
+pub fn trigger_android_media_scan(path: &str) {
+    let ctx = ndk_context::android_context();
+    let vm_ptr = ctx.vm();
+    let activity_ptr = ctx.context();
+    if vm_ptr.is_null() || activity_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        if let Ok(vm) = jni::JavaVM::from_raw(vm_ptr as *mut _) {
+            if let Ok(mut env) = vm.attach_current_thread() {
+                let activity_obj = jni::objects::JObject::from_raw(activity_ptr as *mut _);
+                if !activity_obj.as_raw().is_null() {
+                    if let Ok(j_path) = env.new_string(path) {
+                        let _ = env.call_method(
+                            &activity_obj,
+                            "notifyMediaScan",
+                            "(Ljava/lang/String;)V",
+                            &[jni::objects::JValue::Object(&j_path.into())],
+                        );
+                    }
+                }
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_clear();
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn trigger_android_view_image() {
+    let ctx = ndk_context::android_context();
+    let vm_ptr = ctx.vm();
+    let activity_ptr = ctx.context();
+    if vm_ptr.is_null() || activity_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        if let Ok(vm) = jni::JavaVM::from_raw(vm_ptr as *mut _) {
+            if let Ok(mut env) = vm.attach_current_thread() {
+                let activity_obj = jni::objects::JObject::from_raw(activity_ptr as *mut _);
+                if !activity_obj.as_raw().is_null() {
+                    let _ = env.call_method(&activity_obj, "viewExportedImage", "()V", &[]);
+                }
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_clear();
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn trigger_android_view_folder() {
+    let ctx = ndk_context::android_context();
+    let vm_ptr = ctx.vm();
+    let activity_ptr = ctx.context();
+    if vm_ptr.is_null() || activity_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        if let Ok(vm) = jni::JavaVM::from_raw(vm_ptr as *mut _) {
+            if let Ok(mut env) = vm.attach_current_thread() {
+                let activity_obj = jni::objects::JObject::from_raw(activity_ptr as *mut _);
+                if !activity_obj.as_raw().is_null() {
+                    let _ = env.call_method(&activity_obj, "viewExportedFolder", "()V", &[]);
+                }
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_clear();
+                }
+            }
+        }
+    }
+}
+
     /// Déclenche l'ouverture de fichier selon la plateforme (rfd sur desktop, sélecteur photo Android natif sur mobile).
     pub fn trigger_pick_file(&mut self, ctx: &egui::Context) {
         #[cfg(not(target_os = "android"))]
@@ -539,20 +672,24 @@ pub fn trigger_android_photo_picker() {
         let default_out = format!("{}_UltraHDR.jpg", stem);
 
         #[cfg(not(target_os = "android"))]
-        let target_path = match rfd::FileDialog::new()
-            .set_file_name(&default_out)
-            .add_filter("JPEG Ultra HDR (*.jpg)", &["jpg", "jpeg"])
-            .save_file()
-        {
-            Some(p) => p,
-            None => return,
+        let (target_path, folder_path) = {
+            let p = match rfd::FileDialog::new()
+                .set_file_name(&default_out)
+                .add_filter("JPEG Ultra HDR (*.jpg)", &["jpg", "jpeg"])
+                .save_file()
+            {
+                Some(p) => p,
+                None => return,
+            };
+            let f = p.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| ".".into());
+            (p, f)
         };
 
         #[cfg(target_os = "android")]
-        let target_path = {
-            let pictures_dir = PathBuf::from("/sdcard/Pictures/UltraHDR");
-            let _ = std::fs::create_dir_all(&pictures_dir);
-            pictures_dir.join(&default_out)
+        let (target_path, folder_path) = {
+            let dcim_dir = PathBuf::from("/sdcard/DCIM/ULTRAHDR-STUDIO");
+            let _ = std::fs::create_dir_all(&dcim_dir);
+            (dcim_dir.join(&default_out), dcim_dir.to_string_lossy().to_string())
         };
 
         self.set_status("Calcul et encodage pleine résolution en cours...", Color32::from_rgb(0, 200, 255));
@@ -613,20 +750,66 @@ pub fn trigger_android_photo_picker() {
             img.exif_bytes.as_deref(),
         );
 
-        if let Err(e) = std::fs::write(&target_path, &uhdr_bytes) {
-            self.set_status(&format!("Erreur écriture : {}", e), Color32::from_rgb(231, 76, 60));
-            return;
+        #[cfg(not(target_os = "android"))]
+        {
+            if let Err(e) = std::fs::write(&target_path, &uhdr_bytes) {
+                self.set_status(&format!("Erreur écriture : {}", e), Color32::from_rgb(231, 76, 60));
+                return;
+            }
         }
 
+        #[cfg(target_os = "android")]
+        let final_saved_path = {
+            // 1. Tenter l'écriture directe dans DCIM/ULTRAHDR-STUDIO
+            let write_res = std::fs::write(&target_path, &uhdr_bytes);
+            if write_res.is_ok() {
+                Self::trigger_android_media_scan(&target_path.to_string_lossy());
+                target_path.to_string_lossy().to_string()
+            } else {
+                // 2. Fallback MediaStore officiel (Scoped Storage Android 10-15)
+                match Self::trigger_android_save_export(&uhdr_bytes, &default_out) {
+                    Some(p) => p,
+                    None => {
+                        self.set_status("Erreur écriture dans DCIM/ULTRAHDR-STUDIO", Color32::from_rgb(231, 76, 60));
+                        return;
+                    }
+                }
+            }
+        };
+
+        let display_path = {
+            #[cfg(not(target_os = "android"))]
+            { target_path.to_string_lossy().to_string() }
+            #[cfg(target_os = "android")]
+            { final_saved_path }
+        };
+
         if self.save_standalone_gainmap {
-            let gm_path = target_path.with_file_name(format!("{}_gainmap.jpg", stem));
-            let _ = std::fs::write(&gm_path, &gm_jpeg);
+            let gm_name = format!("{}_gainmap.jpg", stem);
+            #[cfg(not(target_os = "android"))]
+            {
+                let gm_path = target_path.with_file_name(&gm_name);
+                let _ = std::fs::write(&gm_path, &gm_jpeg);
+            }
+            #[cfg(target_os = "android")]
+            {
+                let _ = Self::trigger_android_save_export(&gm_jpeg, &gm_name);
+            }
         }
 
         self.set_status(
-            &format!("Enregistré avec succès : {} ({} Ko, {}×{})", target_path.display(), uhdr_bytes.len() / 1024, w, h),
+            &format!("Enregistré avec succès : {} ({} Ko, {}×{})", display_path, uhdr_bytes.len() / 1024, w, h),
             Color32::from_rgb(46, 204, 113),
         );
+
+        // OUVERTURE AUTOMATIQUE DE LA FENÊTRE DE CONFIRMATION AVEC ACTIONS
+        self.export_success_modal = Some(ExportSuccessInfo {
+            file_path: display_path,
+            folder_path,
+            file_size_kb: uhdr_bytes.len() / 1024,
+            width: w,
+            height: h,
+        });
     }
 
     /// Traitement par lot multithreadé (Rayon) de tout un dossier en JPEG Ultra HDR.
@@ -1167,6 +1350,150 @@ impl eframe::App for UltraHdrApp {
                         }
                     });
                 });
+        }
+
+        // ── Boîte de dialogue de Confirmation d'Exportation Ultra HDR (avec actions directes) ──
+        if let Some(info) = &self.export_success_modal.clone() {
+            let mut close_modal = false;
+            let mut open_image = false;
+            let mut open_folder = false;
+
+            let modal_width = if is_vertical { (screen_rect.width() - 40.0).clamp(280.0, 440.0) } else { 420.0 };
+
+            egui::Window::new("🎉 Export Ultra HDR Réussi !")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .fixed_size(egui::vec2(modal_width, 240.0))
+                .frame(
+                    egui::Frame::window(&ctx.style())
+                        .fill(Color32::from_rgb(22, 26, 38))
+                        .stroke(Stroke::new(1.5f32, Color32::from_rgb(46, 204, 113)))
+                        .rounding(Rounding::same(16.0))
+                        .inner_margin(egui::Margin::same(16.0)),
+                )
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new("✓ JPEG Ultra HDR Prêt !")
+                                .size(17.0)
+                                .strong()
+                                .color(Color32::from_rgb(46, 204, 113)),
+                        );
+                        ui.add_space(3.0);
+                        ui.label(
+                            egui::RichText::new("Fichier conforme ISO 21496-1 avec Gain Map HDR")
+                                .size(11.5)
+                                .color(Color32::from_rgb(160, 175, 200)),
+                        );
+                    });
+
+                    ui.add_space(10.0);
+
+                    // Carte d'emplacement du fichier
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(14, 16, 24))
+                        .rounding(Rounding::same(10.0))
+                        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+                        .stroke(Stroke::new(1.0f32, Color32::from_rgb(38, 44, 62)))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("📁 Emplacement :").strong().size(12.0).color(Color32::from_rgb(138, 180, 248)));
+                            });
+                            ui.add_space(2.0);
+                            ui.label(
+                                egui::RichText::new(&info.file_path)
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(Color32::WHITE),
+                            );
+                            ui.add_space(5.0);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("📐 {} × {} px   •   💾 {} Ko", info.width, info.height, info.file_size_kb))
+                                        .size(11.5)
+                                        .color(Color32::from_rgb(170, 185, 210)),
+                                );
+                            });
+                        });
+
+                    ui.add_space(12.0);
+
+                    // Boutons d'action : Ouvrir l'image / Ouvrir le dossier / Fermer
+                    ui.vertical_centered(|ui| {
+                        ui.horizontal(|ui| {
+                            let btn_img = egui::Button::new(
+                                egui::RichText::new("🖼️ Ouvrir l'image").strong().color(Color32::WHITE).size(13.0),
+                            )
+                            .fill(Color32::from_rgb(25, 118, 210))
+                            .min_size(egui::vec2(if is_vertical { 120.0 } else { 135.0 }, 36.0));
+
+                            if ui.add(btn_img).clicked() {
+                                open_image = true;
+                            }
+
+                            let btn_folder = egui::Button::new(
+                                egui::RichText::new("📁 Ouvrir le dossier").strong().color(Color32::WHITE).size(13.0),
+                            )
+                            .fill(Color32::from_rgb(42, 52, 72))
+                            .stroke(Stroke::new(1.0f32, Color32::from_rgb(70, 85, 115)))
+                            .min_size(egui::vec2(if is_vertical { 120.0 } else { 135.0 }, 36.0));
+
+                            if ui.add(btn_folder).clicked() {
+                                open_folder = true;
+                            }
+                        });
+
+                        ui.add_space(8.0);
+                        if ui.button(egui::RichText::new("Fermer").color(Color32::from_rgb(160, 170, 190))).clicked() {
+                            close_modal = true;
+                        }
+                    });
+                });
+
+            if open_image {
+                #[cfg(target_os = "android")]
+                {
+                    Self::trigger_android_view_image();
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = std::process::Command::new("explorer").arg(&info.file_path).spawn();
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    let _ = std::process::Command::new("xdg-open").arg(&info.file_path).spawn();
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = std::process::Command::new("open").arg(&info.file_path).spawn();
+                }
+                close_modal = true;
+            }
+
+            if open_folder {
+                #[cfg(target_os = "android")]
+                {
+                    Self::trigger_android_view_folder();
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = std::process::Command::new("explorer").args(["/select,", &info.file_path]).spawn();
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    let _ = std::process::Command::new("xdg-open").arg(&info.folder_path).spawn();
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = std::process::Command::new("open").args(["-R", &info.file_path]).spawn();
+                }
+                close_modal = true;
+            }
+
+            if close_modal {
+                self.export_success_modal = None;
+            }
         }
 
         // ── 2. Barre d'État Inférieure (Footer Bureau Uniquement) ──
