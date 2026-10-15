@@ -56,6 +56,16 @@ impl ConfigPane {
             ConfigPane::Export => "Export",
         }
     }
+
+    pub fn full_title(&self) -> &'static str {
+        match self {
+            ConfigPane::Tonal => "🎨 Tonalité & Luminance Pro",
+            ConfigPane::Profiles => "📑 Profils Ultra HDR (1-Tap)",
+            ConfigPane::Engine => "⚙️ Moteur & Paramètres ISO 21496-1",
+            ConfigPane::Simulation => "🎛️ Simulation SDR & Rendu Écran",
+            ConfigPane::Export => "💾 Qualité & Export JPEG Ultra HDR",
+        }
+    }
 }
 
 pub struct ProcessingParams {
@@ -178,6 +188,7 @@ pub struct UltraHdrApp {
     pub ui_scale: f32,
     pub mobile_hide_panels: bool,
     pub mobile_drawer_collapsed: bool,
+    pub mobile_deck_height: f32,
     pub show_mobile_options_menu: bool,
 }
 
@@ -302,6 +313,7 @@ impl UltraHdrApp {
             ui_scale: 1.0,
             mobile_hide_panels: false,
             mobile_drawer_collapsed: false,
+            mobile_deck_height: 290.0,
             show_mobile_options_menu: false,
         }
     }
@@ -1917,17 +1929,28 @@ impl eframe::App for UltraHdrApp {
         if is_vertical {
             if !self.mobile_hide_panels {
                 let total_h = screen_rect.height();
+                let min_h = 58.0_f32; // Poignée tactile + barre d'onglets repliée
+                let max_h = (total_h * 0.85_f32).clamp(280.0, 750.0);
                 let deck_h = if self.mobile_drawer_collapsed {
-                    50.0 // Juste la barre d'onglets pour laisser 90% d'espace à l'image
+                    min_h
                 } else {
-                    (total_h * 0.38).clamp(210.0, 285.0)
+                    self.mobile_deck_height.clamp(160.0, max_h)
                 };
+
                 egui::TopBottomPanel::bottom("vertical_control_deck")
-                    .resizable(false)
-                    .exact_height(deck_h)
-                    .frame(egui::Frame::none().fill(Color32::from_rgb(16, 18, 26)).inner_margin(egui::Margin::symmetric(4.0, 4.0)))
+                    .resizable(!self.mobile_drawer_collapsed)
+                    .default_height(deck_h)
+                    .height_range(min_h..=max_h)
+                    .frame(
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(16, 18, 26))
+                            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(38, 42, 58)))
+                            .inner_margin(egui::Margin::symmetric(4.0, 4.0)),
+                    )
                     .show(ctx, |ui| {
-                        self.ui_vertical_control_deck(ui, ctx);
+                        ui.set_clip_rect(ui.max_rect());
+                        ui.set_max_width(ui.available_width());
+                        self.ui_vertical_control_deck(ui, ctx, max_h);
                     });
             }
         } else if self.bottom_panel_visible {
@@ -1978,7 +2001,7 @@ impl UltraHdrApp {
             .fill(Color32::from_rgb(22, 24, 33))
             .stroke(Stroke::new(1.0f32, Color32::from_rgb(42, 46, 64)))
             .rounding(Rounding::same(8.0))
-            .inner_margin(egui::Margin::symmetric(12.0, 10.0));
+            .inner_margin(egui::Margin::symmetric(if is_vertical { 8.0 } else { 12.0 }, 8.0));
 
         // ── 1. CARTE : 💡 Proposition Automatique & Analyse ──
         let proposal_score = self.analysis.as_ref().map(|a| a.potential_score).unwrap_or(0);
@@ -2010,20 +2033,15 @@ impl UltraHdrApp {
 
                     ui.add_space(6.0);
                     // Grille de métadonnées
-                    if is_vertical {
-                        ui.horizontal(|ui| {
-                            draw_meta_box(ui, "Hautes Lumières", &format!("{:.1}%", analysis.highlight_ratio_pct));
-                            draw_meta_box(ui, "Contraste", &format!("{:.0}:1", analysis.contrast_ratio));
-                        });
-                    } else {
-                        ui.horizontal(|ui| {
-                            draw_meta_box(ui, "Hautes Lumières", &format!("{:.1}%", analysis.highlight_ratio_pct));
-                            draw_meta_box(ui, "Contraste", &format!("{:.0}:1", analysis.contrast_ratio));
-                        });
-                    }
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        draw_meta_box(ui, "Hautes Lum.", &format!("{:.1}%", analysis.highlight_ratio_pct));
+                        draw_meta_box(ui, "Contraste", &format!("{:.0}:1", analysis.contrast_ratio));
+                    });
 
                     ui.add_space(8.0);
-                    if crate::theme_material::m3_filled_button(ui, &self.m3_theme, "✨", "Appliquer la proposition recommandée", 32.0).clicked() {
+                    let prop_btn_lbl = if is_vertical { "Appliquer proposition" } else { "Appliquer la proposition recommandée" };
+                    if crate::theme_material::m3_filled_button(ui, &self.m3_theme, "✨", prop_btn_lbl, 32.0).clicked() {
                         preset_to_apply = Some(analysis.recommended_preset.clone());
                     }
                 } else {
@@ -2069,14 +2087,14 @@ impl UltraHdrApp {
         }
     }
 
-    fn ui_panel_engine_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, _is_vertical: bool) {
+    fn ui_panel_engine_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_vertical: bool) {
         let mut params_changed = false;
 
         let card_frame = egui::Frame::none()
             .fill(Color32::from_rgb(22, 24, 33))
             .stroke(Stroke::new(1.0f32, Color32::from_rgb(42, 46, 64)))
             .rounding(Rounding::same(8.0))
-            .inner_margin(egui::Margin::symmetric(12.0, 10.0));
+            .inner_margin(egui::Margin::symmetric(if is_vertical { 8.0 } else { 12.0 }, 8.0));
 
         // ── CARTE : ⚙️ Réglages Moteur Ultra HDR ──
         card_frame.show(ui, |ui| {
@@ -2122,6 +2140,7 @@ impl UltraHdrApp {
                     .rounding(Rounding::same(6.0))
                     .inner_margin(egui::Margin::symmetric(8.0, 6.0))
                     .show(ui, |ui| {
+                        let boost_lbl = if is_vertical { "Boost" } else { "Multiplicateur" };
                         ui.columns(3, |cols| {
                             cols[0].vertical_centered(|ui| {
                                 ui.label(egui::RichText::new("Gain Min").size(10.0).color(Color32::GRAY));
@@ -2132,7 +2151,7 @@ impl UltraHdrApp {
                                 ui.label(egui::RichText::new(format!("+{:.2} IL", self.gain_max)).strong().size(12.0).color(Color32::from_rgb(0, 200, 255)));
                             });
                             cols[2].vertical_centered(|ui| {
-                                ui.label(egui::RichText::new("Multiplicateur").size(10.0).color(Color32::GRAY));
+                                ui.label(egui::RichText::new(boost_lbl).size(10.0).color(Color32::GRAY));
                                 ui.label(egui::RichText::new(format!("{:.1}×", self.preview_multiplier)).strong().size(12.0).color(Color32::from_rgb(255, 195, 40)));
                             });
                         });
@@ -2159,14 +2178,14 @@ impl UltraHdrApp {
         self.ui_panel_tonal_content(ui, ctx, false);
     }
 
-    fn ui_panel_tonal_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, _is_vertical: bool) {
+    fn ui_panel_tonal_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_vertical: bool) {
         let mut params_changed = false;
 
         let card_frame = egui::Frame::none()
             .fill(Color32::from_rgb(22, 24, 33))
             .stroke(Stroke::new(1.0f32, Color32::from_rgb(42, 46, 64)))
             .rounding(Rounding::same(8.0))
-            .inner_margin(egui::Margin::symmetric(12.0, 10.0));
+            .inner_margin(egui::Margin::symmetric(if is_vertical { 8.0 } else { 12.0 }, 8.0));
 
         // ── 1. CARTE : 🎨 Tonalité Pro (Lightroom) ──
         card_frame.show(ui, |ui| {
@@ -2175,13 +2194,15 @@ impl UltraHdrApp {
                 ui.label(egui::RichText::new(chevron).size(13.0).color(Color32::from_rgb(150, 155, 175)));
                 ui.label(egui::RichText::new("🎨").size(14.0));
                 ui.label(egui::RichText::new("Courbe Tonale").strong().size(13.0).color(Color32::WHITE));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some((zone, _lum)) = self.hovered_zone {
-                        draw_pill(ui, zone.name_fr(), Color32::from_rgb(0, 120, 212), Color32::WHITE);
-                    } else {
-                        draw_pill(ui, "4 Zones", Color32::from_rgb(25, 30, 42), Color32::from_rgb(160, 175, 210));
-                    }
-                });
+                if !is_vertical {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some((zone, _lum)) = self.hovered_zone {
+                            draw_pill(ui, zone.name_fr(), Color32::from_rgb(0, 120, 212), Color32::WHITE);
+                        } else {
+                            draw_pill(ui, "4 Zones", Color32::from_rgb(25, 30, 42), Color32::from_rgb(160, 175, 210));
+                        }
+                    });
+                }
             });
 
             if header_resp.response.interact(egui::Sense::click()).clicked() {
@@ -2189,7 +2210,7 @@ impl UltraHdrApp {
             }
 
             if self.card_tonal_open {
-                ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(120.0);
+                ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(80.0);
                 ui.add_space(6.0);
                 ui.separator();
                 ui.add_space(6.0);
@@ -2198,6 +2219,8 @@ impl UltraHdrApp {
                 let tat_active = self.targeted_tool_active;
                 let tat_label = if tat_active {
                     "Outil Ciblé ACTIF [T]"
+                } else if is_vertical {
+                    "Ajuster sur image [T]"
                 } else {
                     "Ajuster sur l'image [T]"
                 };
@@ -2278,7 +2301,8 @@ impl UltraHdrApp {
             ui.add_space(8.0);
 
             // Bouton réinitialiser M3
-            if crate::theme_material::m3_outlined_button(ui, &self.m3_theme, "↺", "Réinitialiser Tonalité & Couleur").clicked() {
+            let rst_lbl = if is_vertical { "Réinitialiser tout" } else { "Réinitialiser Tonalité & Couleur" };
+            if crate::theme_material::m3_outlined_button(ui, &self.m3_theme, "↺", rst_lbl).clicked() {
                 self.params.tonal_contrast = 0.0;
                 self.params.tonal_whites = 0.0;
                 self.params.tonal_highlights = 0.0;
@@ -2298,7 +2322,7 @@ impl UltraHdrApp {
     fn ui_card_simulation(&mut self, ui: &mut egui::Ui, card_frame: &egui::Frame, is_vertical: bool) -> bool {
         let mut params_changed = false;
         card_frame.show(ui, |ui| {
-            ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(120.0);
+            ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(80.0);
 
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("🖥️").size(15.0));
@@ -2519,7 +2543,7 @@ impl UltraHdrApp {
             .fill(Color32::from_rgb(22, 25, 35))
             .stroke(Stroke::new(1.0f32, Color32::from_rgb(44, 49, 68)))
             .rounding(Rounding::same(8.0))
-            .inner_margin(egui::Margin::symmetric(14.0, 10.0));
+            .inner_margin(egui::Margin::symmetric(if is_vertical { 8.0 } else { 14.0 }, 8.0));
 
         let mut changed = false;
         changed |= self.ui_card_simulation(ui, &card_frame, is_vertical);
@@ -2536,7 +2560,7 @@ impl UltraHdrApp {
             .fill(Color32::from_rgb(22, 25, 35))
             .stroke(Stroke::new(1.0f32, Color32::from_rgb(44, 49, 68)))
             .rounding(Rounding::same(8.0))
-            .inner_margin(egui::Margin::symmetric(14.0, 10.0));
+            .inner_margin(egui::Margin::symmetric(if is_vertical { 8.0 } else { 14.0 }, 8.0));
 
         let mut changed = false;
         let (_p_ch, trigger_export) = self.ui_card_export(ui, &card_frame, is_vertical);
@@ -2630,7 +2654,57 @@ impl UltraHdrApp {
         }
     }
 
-    fn ui_vertical_control_deck(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn ui_vertical_control_deck(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, max_h: f32) {
+        // Enregistrer la hauteur réelle courante du panneau pour la persistance du redimensionnement
+        if !self.mobile_drawer_collapsed {
+            let actual_h = ui.max_rect().height();
+            if actual_h >= 140.0 {
+                self.mobile_deck_height = actual_h;
+            }
+        }
+
+        let avail_w = ui.available_width();
+
+        // ── 1. Poignée tactile Material 3 pour monter / descendre le panneau (Resizer) ──
+        let handle_h = 16.0_f32;
+        let (handle_rect, handle_resp) = ui.allocate_exact_size(
+            Vec2::new(avail_w, handle_h),
+            egui::Sense::click_and_drag(),
+        );
+
+        if ui.is_rect_visible(handle_rect) {
+            // Dessin de la poignée en pilule ("—")
+            let pill_w = 42.0_f32;
+            let pill_h = 4.0_f32;
+            let pill_rect = Rect::from_center_size(handle_rect.center(), Vec2::new(pill_w, pill_h));
+            let pill_col = if handle_resp.dragged() {
+                self.m3_theme.primary
+            } else if handle_resp.hovered() {
+                Color32::from_rgb(180, 195, 225)
+            } else {
+                Color32::from_rgb(95, 105, 130)
+            };
+            ui.painter().rect_filled(pill_rect, Rounding::same(2.0), pill_col);
+        }
+
+        // Glissement tactile vertical pour monter / descendre le panneau :
+        // Un glissement vers le haut (dy < 0) monte le panneau (augmente la hauteur)
+        // Un glissement vers le bas (dy > 0) descend le panneau (diminue la hauteur)
+        if handle_resp.dragged() {
+            let dy = handle_resp.drag_delta().y;
+            self.mobile_deck_height = (self.mobile_deck_height - dy).clamp(160.0, max_h);
+            self.mobile_drawer_collapsed = false;
+            ctx.request_repaint();
+        }
+
+        // Clic ou tap sur la poignée pour basculer rapidement réduit / étendu
+        if handle_resp.clicked() {
+            self.mobile_drawer_collapsed = !self.mobile_drawer_collapsed;
+            ctx.request_repaint();
+        }
+
+        ui.add_space(2.0);
+
         let panes = [
             ConfigPane::Tonal,
             ConfigPane::Profiles,
@@ -2639,18 +2713,30 @@ impl UltraHdrApp {
             ConfigPane::Export,
         ];
 
-        let avail_w = ui.available_width();
         if avail_w < 540.0 {
-            // Disposition Smartphone Portrait Étroite (Lightroom Mobile deck) :
-            // 5 Onglets Material 3 + Bouton Réduire/Agrandir en 1 SEULE ligne horizontale
+            // Disposition Smartphone Portrait (Lightroom Mobile deck) :
+            // 5 Onglets Icônes SEULES (sans texte) + Bouton Réduire/Agrandir
             ui.vertical(|ui| {
-                let btn_w = 26.0;
-                let tab_w = ((avail_w - btn_w - 14.0) / 5.0).max(34.0);
+                let item_gap = 4.0_f32;
+                let btn_w = 28.0_f32;
+                let total_gaps = item_gap * 5.0; // 5 intervalles entre les 6 boutons
+                let space_for_tabs = (avail_w - btn_w - total_gaps - 2.0).max(140.0);
+                let tab_w = (space_for_tabs / 5.0).floor();
+
+                ui.spacing_mut().item_spacing.x = item_gap;
+
                 ui.horizontal(|ui| {
-                    ui.add_space(2.0);
                     for pane in panes {
                         let is_active = self.active_config_pane == pane;
-                        if crate::theme_material::material_tab(ui, &self.m3_theme, is_active, pane.icon(), pane.title(), tab_w).clicked() {
+                        let resp = crate::theme_material::material_icon_tab(
+                            ui,
+                            &self.m3_theme,
+                            is_active,
+                            pane.icon(),
+                            pane.title(),
+                            tab_w,
+                        );
+                        if resp.clicked() {
                             if is_active && !self.mobile_drawer_collapsed {
                                 self.mobile_drawer_collapsed = true;
                             } else {
@@ -2659,25 +2745,79 @@ impl UltraHdrApp {
                             }
                         }
                     }
+
                     let chevron = if self.mobile_drawer_collapsed { "▲" } else { "▼" };
-                    let chev_btn = egui::Button::new(egui::RichText::new(chevron).size(13.0).color(Color32::from_rgb(170, 180, 205)))
-                        .fill(self.m3_theme.surface_container)
-                        .stroke(Stroke::new(1.0f32, self.m3_theme.outline_variant))
-                        .rounding(Rounding::same(12.0));
-                    if ui.add_sized([btn_w, 36.0], chev_btn).on_hover_text("Réduire / Déployer le panneau").clicked() {
+                    let chev_btn = egui::Button::new(
+                        egui::RichText::new(chevron).size(13.0).color(Color32::from_rgb(170, 180, 205)),
+                    )
+                    .fill(self.m3_theme.surface_container)
+                    .stroke(Stroke::new(1.0f32, self.m3_theme.outline_variant))
+                    .rounding(Rounding::same(12.0));
+
+                    if ui
+                        .add_sized([btn_w, 34.0], chev_btn)
+                        .on_hover_text("Monter / Descendre le tiroir")
+                        .clicked()
+                    {
                         self.mobile_drawer_collapsed = !self.mobile_drawer_collapsed;
                     }
-                    ui.add_space(2.0);
                 });
 
                 if !self.mobile_drawer_collapsed {
+                    ui.add_space(6.0);
+
+                    // ── Titre dans le haut de l'onglet actif avec Badge Pilule ──
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(self.active_config_pane.full_title())
+                                .strong()
+                                .size(13.5)
+                                .color(self.m3_theme.on_surface),
+                        );
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            match self.active_config_pane {
+                                ConfigPane::Tonal => {
+                                    if let Some((zone, _)) = self.hovered_zone {
+                                        draw_pill(ui, zone.name_fr(), Color32::from_rgb(0, 120, 212), Color32::WHITE);
+                                    } else {
+                                        draw_pill(ui, "4 Zones", Color32::from_rgb(25, 30, 42), Color32::from_rgb(160, 175, 210));
+                                    }
+                                }
+                                ConfigPane::Profiles => {
+                                    let score = self.analysis.as_ref().map(|a| a.potential_score).unwrap_or(0);
+                                    draw_pill(ui, &format!("{}%", score), Color32::from_rgb(30, 35, 48), Color32::from_rgb(46, 204, 113));
+                                }
+                                ConfigPane::Engine => {
+                                    draw_pill(ui, "ISO 21496-1", Color32::from_rgb(25, 30, 44), Color32::from_rgb(0, 200, 255));
+                                }
+                                ConfigPane::Simulation => {
+                                    let mode_lbl = match self.params.tone_map_mode.as_str() {
+                                        "vivid" => "Éclat",
+                                        "natural" => "Naturel",
+                                        "aces" => "ACES",
+                                        "reinhard" => "Reinhard",
+                                        _ => "Direct",
+                                    };
+                                    draw_pill(ui, mode_lbl, Color32::from_rgb(25, 30, 44), Color32::from_rgb(255, 195, 40));
+                                }
+                                ConfigPane::Export => {
+                                    draw_pill(ui, "JPEG / MPF", Color32::from_rgb(25, 30, 44), Color32::from_rgb(140, 200, 160));
+                                }
+                            }
+                        });
+                    });
+
                     ui.add_space(3.0);
                     ui.separator();
-                    ui.add_space(3.0);
+                    ui.add_space(4.0);
 
+                    // Zone de défilement verticale strictement bornée en largeur
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
+                        .max_width(avail_w)
                         .show(ui, |ui| {
+                            ui.set_max_width(avail_w);
                             ui.vertical(|ui| {
                                 match self.active_config_pane {
                                     ConfigPane::Tonal => self.ui_panel_tonal_content(ui, ctx, true),
@@ -2687,7 +2827,7 @@ impl UltraHdrApp {
                                     ConfigPane::Export => self.ui_panel_export_content(ui, ctx, true),
                                 }
                                 #[cfg(target_os = "android")]
-                                ui.add_space(28.0);
+                                ui.add_space(32.0);
                             });
                         });
                 }
@@ -2712,9 +2852,22 @@ impl UltraHdrApp {
                 ui.add_space(4.0);
 
                 ui.vertical(|ui| {
+                    // Titre en haut sur tablette
+                    ui.label(
+                        egui::RichText::new(self.active_config_pane.full_title())
+                            .strong()
+                            .size(14.0)
+                            .color(self.m3_theme.on_surface),
+                    );
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
+                        .max_width(avail_w - 130.0)
                         .show(ui, |ui| {
+                            ui.set_max_width(avail_w - 130.0);
                             ui.vertical(|ui| {
                                 match self.active_config_pane {
                                     ConfigPane::Tonal => self.ui_panel_tonal_content(ui, ctx, true),
@@ -3266,7 +3419,7 @@ fn draw_tonal_histogram(
     let zones = [
         (TonalZone::Blacks, 0.0, 0.25, Color32::from_rgb(45, 55, 80), "Noirs"),
         (TonalZone::Shadows, 0.25, 0.50, Color32::from_rgb(30, 80, 120), "Ombres"),
-        (TonalZone::Highlights, 0.50, 0.75, Color32::from_rgb(140, 100, 30), "Hautes Lum."),
+        (TonalZone::Highlights, 0.50, 0.75, Color32::from_rgb(140, 100, 30), "Hautes"),
         (TonalZone::Whites, 0.75, 1.0, Color32::from_rgb(160, 160, 170), "Blancs"),
     ];
 

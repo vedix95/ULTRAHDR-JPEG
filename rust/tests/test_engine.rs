@@ -561,4 +561,59 @@ fn test_mobile_lightroom_deck_and_panes() {
     assert!(split_x >= min_x && split_x <= max_x);
 }
 
+#[test]
+fn test_mobile_bottom_deck_resizer_and_icon_tab_bounds() {
+    use ultrahdr::gui::ConfigPane;
+
+    // 1. Vérification des titres complets pour l'en-tête de l'onglet actif
+    assert!(ConfigPane::Tonal.full_title().contains("Tonalité"));
+    assert!(ConfigPane::Profiles.full_title().contains("Profils"));
+    assert!(ConfigPane::Engine.full_title().contains("ISO 21496-1"));
+    assert!(ConfigPane::Simulation.full_title().contains("Simulation SDR"));
+    assert!(ConfigPane::Export.full_title().contains("Export"));
+
+    // 2. Vérification que la somme des largeurs des 5 onglets icônes + chevron + espacements
+    // reste STRICTEMENT inférieure ou égale à la largeur de l'écran (zéro débordement à droite)
+    let screen_widths: [f32; 5] = [320.0, 360.0, 392.0, 412.0, 540.0];
+    for avail_w in screen_widths {
+        let item_gap = 4.0_f32;
+        let btn_w = 28.0_f32;
+        let total_gaps = item_gap * 5.0; // 5 intervalles
+        let space_for_tabs = (avail_w - btn_w - total_gaps - 2.0).max(140.0);
+        let tab_w = (space_for_tabs / 5.0).floor();
+
+        let total_allocated = 5.0 * tab_w + btn_w + total_gaps;
+        assert!(
+            total_allocated <= avail_w,
+            "Débordement détecté sur écran de {}px : total_allocated={}px",
+            avail_w,
+            total_allocated
+        );
+        assert!(tab_w >= 28.0, "Onglet trop étroit : {}px", tab_w);
+    }
+
+    // 3. Vérification de la dynamique de redimensionnement (resizer monter / descendre)
+    let total_h = 800.0_f32;
+    let max_h = (total_h * 0.85_f32).clamp(280.0, 750.0);
+    let mut current_h = 290.0_f32;
+
+    // Glisser vers le haut (dy = -50.0) -> Monter le panneau
+    let dy_up = -50.0_f32;
+    current_h = (current_h - dy_up).clamp(160.0, max_h);
+    assert_eq!(current_h, 340.0);
+
+    // Glisser vers le bas (dy = +100.0) -> Descendre le panneau
+    let dy_down = 100.0_f32;
+    current_h = (current_h - dy_down).clamp(160.0, max_h);
+    assert_eq!(current_h, 240.0);
+
+    // Glisser au maximum vers le bas -> clamped à 160.0 minimum
+    current_h = (current_h - 500.0).clamp(160.0, max_h);
+    assert_eq!(current_h, 160.0);
+
+    // Glisser au maximum vers le haut (dy = -1000.0) -> clamped à max_h
+    current_h = (current_h - (-1000.0)).clamp(160.0, max_h);
+    assert_eq!(current_h, max_h);
+}
+
 

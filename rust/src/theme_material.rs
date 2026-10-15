@@ -546,6 +546,50 @@ pub fn material_tab(ui: &mut Ui, theme: &DynamicM3Theme, selected: bool, icon: &
     response
 }
 
+/// Helper to render a Material 3 Icon-only Navigation Tab (Lightroom Mobile / Android bottom deck)
+pub fn material_icon_tab(ui: &mut Ui, theme: &DynamicM3Theme, selected: bool, icon: &str, tooltip: &str, width: f32) -> Response {
+    let (bg_fill, fg_color, stroke) = if selected {
+        (
+            theme.primary_container,
+            theme.on_primary_container,
+            Stroke::new(1.3_f32, theme.primary),
+        )
+    } else {
+        (
+            theme.surface_container,
+            theme.on_surface_variant,
+            Stroke::new(1.0_f32, theme.outline_variant),
+        )
+    };
+
+    let rounding = Rounding::same(12.0_f32);
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(width.max(28.0_f32), 34.0_f32),
+        egui::Sense::click(),
+    );
+
+    if ui.is_rect_visible(rect) {
+        let hover_adjust = if response.hovered() {
+            theme.surface_container_high
+        } else {
+            bg_fill
+        };
+
+        ui.painter().rect(rect, rounding, hover_adjust, stroke);
+
+        let font_id = FontId::new(16.5_f32, FontFamily::Proportional);
+        let galley = ui.painter().layout_no_wrap(icon.to_string(), font_id, fg_color);
+        let text_pos = rect.center() - galley.size() / 2.0_f32;
+        ui.painter().galley(text_pos, galley, fg_color);
+    }
+
+    if !tooltip.is_empty() {
+        response.on_hover_text(tooltip)
+    } else {
+        response
+    }
+}
+
 /// Helper to render a Material 3 Card Container
 pub fn material_card<R>(
     ui: &mut Ui,
@@ -783,7 +827,7 @@ where
     });
 
     // Ligne 2 : Slider tactile pleine largeur avec poignée de préhension confortable
-    let slider_w = (ui.available_width() - 4.0_f32).max(120.0_f32);
+    let slider_w = (ui.available_width() - 10.0_f32).max(80.0_f32);
     ui.spacing_mut().slider_width = slider_w;
     ui.spacing_mut().interact_size.y = metrics.slider_track_h.max(22.0);
 
