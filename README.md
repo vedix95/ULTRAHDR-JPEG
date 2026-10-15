@@ -1,13 +1,28 @@
 # ✨ UltraHDR Studio — Moteur & Studio Photo Ultra HDR en Rust Pur
 
 [![CI / CD Build & Multiplatform Release](https://github.com/vedix95/ULTRAHDR-JPEG/actions/workflows/build.yml/badge.svg)](https://github.com/vedix95/ULTRAHDR-JPEG/actions/workflows/build.yml)
-[![GitHub Release](https://img.shields.io/github/v/release/vedix95/ULTRAHDR-JPEG?color=blue&label=Release%20v1.0.0)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.0.0)
+[![GitHub Release](https://img.shields.io/github/v/release/vedix95/ULTRAHDR-JPEG?color=blue&label=Release%20v1.1.0)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.1.0)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-blue.svg)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.0.0)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20Android-blue.svg)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.1.0)
 
-> **Éditeur et générateur photographique Ultra HDR professionnel en Rust pur**, 100% conforme aux standards internationaux **ISO 21496-1** et **Google Ultra HDR (v1.0)**.
-> Développé avec une **architecture 100% native** (zéro dépendance Python, zéro Electron, zéro WebView, rendu direct matériel GPU via `wgpu` / DirectX 12 / Vulkan / Wayland) et un moteur **CLI multithreadé ultra-rapide (Rayon)**.
+> **Éditeur et générateur photographique Ultra HDR professionnel en Rust pur**, 100% conforme aux standards internationaux **ISO 21496-1** et **Google Ultra HDR (v1.1)**.
+> Développé avec une **architecture 100% native** (zéro dépendance Python, zéro Electron, zéro WebView, rendu direct matériel GPU via `wgpu` / DirectX 12 / Vulkan / Wayland / Android NDK) et un moteur **CLI multithreadé ultra-rapide (Rayon)**.
+
+---
+
+## 🌟 Nouveautés Majeures de la Version 1.1
+
+- 🎨 **Design Material Design 3 (Material You)** : Thème sombre OLED raffiné avec extraction automatique des couleurs d'accentuation de l'appareil hôte (Android Monet et Windows Accent DWM).
+- 📱 **Support Natif Android Officiel** : Package APK autonome pour smartphones, écrans pliables (Foldables) et tablettes, avec détection de format d'écran et cibles tactiles $\ge 48\text{dp}$.
+- 🚀 **Répertoire `dist/` Centralisé & Multiplateforme** :
+  - `dist/windows/ultrahdr.exe` (Windows 64-bit DirectX 12 / scRGB)
+  - `dist/linux/ultrahdr` (Linux 64-bit ELF statique Wayland / X11)
+  - `dist/android/ultrahdr.apk` (Android ARM64 APK natif)
+- 📈 **Moteur de Gain Logarithmique EV / Stops (ISO 21496-1)** : Interpolation en stops garantissant une progression uniforme et indépendante de la luminance crête. Les très hautes lumières et reflets spéculaires montent sans aucune saturation précoce jusqu'à **10 000 nits**.
+- 🔍 **Contrôle d'Échelle UI par Stepper (+ / -)** : Réglage précis de la taille de l'interface (70% à 150%) avec bouton de réinitialisation 100% en un clic.
+- 📐 **Panneaux Entièrement Redimensionnables & Auto-Ajustés** : Poignées latérales et inférieures fluides avec bornes automatiques empêchant tout débordement ou chevauchement.
+- 🚫 **Élimination Totale des Pictogrammes en Carré (`□`)** : Adoption d'émojis universels et intégration de la police système de secours (*Segoe UI Symbol*).
 
 ---
 
@@ -16,7 +31,7 @@
 Le format **JPEG Ultra HDR** réconcilie la compatibilité universelle et l'imagerie moderne à haute dynamique :
 1. **Compatibilité universelle SDR** : Tout visualiseur classique, navigateur web ou écran SDR affiche l'image JPEG de base sans aucune altération.
 2. **Gain Map ISO 21496-1 intégrée** : Une carte de gain secondaire encodée en niveaux de gris est encapsulée dans le fichier via les métadonnées Adobe XMP (`hdrgm`) et le format multi-images CIPA DC-007 MPF APP2.
-3. **Rendu HDR Éclatant** : Sur les appareils compatibles (écrans OLED/Mini-LED HDR, smartphones Android récents, Google Chrome, iOS 18+, macOS, Windows 11 HDR), la carte de gain est appliquée dynamiquement pour restituer jusqu'à **10 000 nits** d'éclat lumineux dans les reflets et les crêtes spéculaires.
+3. **Rendu HDR Éclatant** : Sur les appareils compatibles (écrans OLED/Mini-LED HDR, smartphones Android récents, Google Photos, Chrome, iOS 18+, macOS, Windows 11 HDR), la carte de gain est appliquée dynamiquement pour restituer jusqu'à **10 000 nits** d'éclat lumineux dans les reflets et les crêtes spéculaires.
 
 ```mermaid
 flowchart LR
@@ -77,12 +92,14 @@ flowchart LR
 | Raccourci | Action |
 | :--- | :--- |
 | **<kbd>Ctrl</kbd> + <kbd>O</kbd>** | Ouvrir une image |
-| **<kbd>Ctrl</kbd> + <kbd>S</kbd>** | Exporter l'image Ultra HDR finale |
+| **<kbd>Ctrl</kbd> + <kbd>S</kbd>** / **<kbd>F12</kbd>** | Exporter l'image JPEG Ultra HDR finale |
 | **<kbd>Espace</kbd>** / **<kbd>\</kbd>** *(maintenir)* | **Afficher instantanément l'image originale SDR** (Hold to Compare) |
 | **<kbd>\</kbd>** / **<kbd>/</kbd>** *(appui simple)* | Basculer la vue comparaison Original SDR / Ultra HDR |
 | **<kbd>M</kbd>** | Changer de mode d'affichage (`Split` → `SideBySide` → `FullHdr` → `GainMap` → `Heatmap`) |
 | **<kbd>T</kbd>** | Activer / désactiver l'**Outil Ciblé Direct (TAT)** sur l'image |
-| **<kbd>Tab</kbd>** | Afficher / masquer le panneau latéral d'outils |
+| **<kbd>F1</kbd>** | Afficher / masquer le volet gauche (Source & Profils) |
+| **<kbd>F2</kbd>** | Afficher / masquer le volet droit (Tonalité Pro) |
+| **<kbd>F3</kbd>** | Afficher / masquer le dock inférieur (Simulation & Export) |
 | **<kbd>F11</kbd>** | Basculer en mode Plein Écran |
 | **<kbd>R</kbd>** | Réinitialiser tous les réglages par défaut |
 | **<kbd>Échap</kbd>** | Quitter l'outil ciblé ou réinitialiser le mode comparaison |
@@ -93,13 +110,14 @@ flowchart LR
 
 ## 🚀 Téléchargement & Installation
 
-Les binaires autonomes multiplateformes (sans dépendance externe requise) sont générés automatiquement par le pipeline CI/CD GitHub Actions.
+Les livrables autonomes multiplateformes (sans dépendance externe requise) sont disponibles dans le répertoire [`dist/`](dist/) et dans les **Releases GitHub** :
 
-👉 **[Télécharger la version officielle (Releases)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.0.0)**
+👉 **[Télécharger la version officielle (Releases)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.1.0)**
 
 ### Packages Disponibles :
-- **Linux 64-bit** : [`ultrahdr-linux-x64.tar.gz`](https://github.com/vedix95/ULTRAHDR-JPEG/releases/download/v1.0.0/ultrahdr-linux-x64.tar.gz)
-- **Windows 64-bit** : [`ultrahdr-windows-x64.zip`](https://github.com/vedix95/ULTRAHDR-JPEG/releases/download/v1.0.0/ultrahdr-windows-x64.zip)
+- **Android ARM64 (APK)** : [`ultrahdr.apk`](https://github.com/vedix95/ULTRAHDR-JPEG/releases/download/v1.1.0/ultrahdr.apk)
+- **Windows 64-bit** : [`ultrahdr-windows-x64.zip`](https://github.com/vedix95/ULTRAHDR-JPEG/releases/download/v1.1.0/ultrahdr-windows-x64.zip)
+- **Linux 64-bit** : [`ultrahdr-linux-x64.tar.gz`](https://github.com/vedix95/ULTRAHDR-JPEG/releases/download/v1.1.0/ultrahdr-linux-x64.tar.gz)
 
 ### Lancement Rapide :
 - **Sous Linux** :

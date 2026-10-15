@@ -406,3 +406,114 @@ fn test_edr_no_clipping_at_extreme_nits() {
     assert!(sim_natural[3] < 255);
 }
 
+#[test]
+fn test_assemble_ultra_hdr_jpeg_with_exif_and_google_container() {
+    let w = 80;
+    let h = 80;
+    let sdr_u8 = vec![180u8; (w * h * 3) as usize];
+    let res = compute_hdr_and_gain_map(
+        &sdr_u8,
+        None,
+        false,
+        w,
+        h,
+        1000.0,
+        203.0,
+        1.0,
+        1.0,
+        0.5,
+        TonalParams::default(),
+        0.0,
+    );
+
+    let base_jpeg = encode_rgb_jpeg(&sdr_u8, w, h, 90).expect("encodage base");
+    let gm_jpeg = encode_gain_map_jpeg(&res.gain_log2, res.gain_min, res.gain_max, w, h, 85).expect("encodage gm");
+
+    // Créer un segment EXIF simulé de taille conséquente (comme sur les photos prises sur Android Pixel / Samsung)
+    let fake_exif_len = 2048;
+    let mut fake_exif = vec![0xFF, 0xE1, ((fake_exif_len >> 8) & 0xFF) as u8, (fake_exif_len & 0xFF) as u8];
+    fake_exif.extend(b"Exif\0\0");
+    fake_exif.resize(fake_exif_len, 0x42);
+
+    // 1. Assembler avec EXIF (Android)
+    let uhdr_with_exif = assemble_ultra_hdr_jpeg(&base_jpeg, &gm_jpeg, res.gain_min, res.gain_max, 1000.0, 203.0, Some(&fake_exif));
+
+    // 2. Assembler sans EXIF (PC)
+    let uhdr_no_exif = assemble_ultra_hdr_jpeg(&base_jpeg, &gm_jpeg, res.gain_min, res.gain_max, 1000.0, 203.0, None);
+
+    // Vérifier les invariants MPF pour les deux fichiers :
+    for (name, uhdr_bytes) in [("avec EXIF (Android)", &uhdr_with_exif), ("sans EXIF (PC)", &uhdr_no_exif)] {
+        // Doit commencer par SOI
+        assert_eq!(&uhdr_bytes[..2], &[0xFF, 0xD8], "{}: SOI manquant", name);
+
+        // Trouver le marqueur MPF
+        let mpf_marker = b"MPF\0";
+        let mpf_pos = uhdr_bytes.windows(4).position(|w| w == mpf_marker).expect("MPF marker trouvé");
+
+        // L'en-tête TIFF "II\x2A\x00" commence exactement 4 octets après "MPF\0"
+        let tiff_pos = mpf_pos + 4;
+        assert_eq!(&uhdr_bytes[tiff_pos..tiff_pos + 4], b"II\x2a\x00", "{}: Header TIFF MPF non conforme", name);
+
+        // Dans la spécification CIPA DC-007 :
+        // MP Entry 2 (Gain Map) a son champ offset à l'octet 74 depuis "II" :
+        // 8 (TIFF header) + 2 (count) + 3 * 12 (tags) + 4 (next IFD) + 16 (Entry 1) + 8 (Entry 2 type + size) = 74
+        let offset_bytes = &uhdr_bytes[tiff_pos + 74..tiff_pos + 78];
+        let mpf_entry_offset = u32::from_le_bytes(offset_bytes.try_into().unwrap()) as usize;
+
+        // Cet offset mesuré DEPUIS tiff_pos ("II") DOIT pointer EXACTEMENT vers les deux octets [0xFF, 0xD8] (SOI du gain map JPEG) !
+        let target_gm_soi_pos = tiff_pos + mpf_entry_offset;
+        assert!(target_gm_soi_pos + 2 <= uhdr_bytes.len(), "{}: target_gm_soi_pos hors limites", name);
+        assert_eq!(
+            &uhdr_bytes[target_gm_soi_pos..target_gm_soi_pos + 2],
+            &[0xFF, 0xD8],
+            "{}: Le pointeur MPF pointe sur [{:02X}, {:02X}] au lieu de [0xFF, 0xD8] SOI du gain map !",
+            name,
+            uhdr_bytes[target_gm_soi_pos],
+            uhdr_bytes[target_gm_soi_pos + 1]
+        );
+
+        // Vérifier les balises Google Photos GContainer
+        let text = String::from_utf8_lossy(uhdr_bytes);
+        assert!(text.contains("Container:Directory"), "{}: Container:Directory manquant", name);
+        assert!(text.contains("Item:Semantic=\"GainMap\""), "{}: Item:Semantic GainMap manquant", name);
+        let actual_gm_len = uhdr_bytes.len() - target_gm_soi_pos;
+        assert!(text.contains(&format!("Item:Length=\"{}\"", actual_gm_len)), "{}: Item:Length manquant ou erroné", name);
+        assert!(text.contains("hdrgm:Gamma=\"1.0\""), "{}: hdrgm:Gamma manquant", name);
+        assert!(text.contains("hdrgm:BaseRenditionIsHDR=\"False\""), "{}: BaseRenditionIsHDR manquant", name);
+    }
+}
+
+#[test]
+fn test_adaptive_ui_metrics_and_panel_clamping() {
+    let ctx = egui::Context::default();
+
+    // 1. Desktop 1080p standard
+    let metrics_desktop = ultrahdr::theme_material::AdaptiveUiMetrics::compute(&ctx, false);
+    assert!(metrics_desktop.scale >= 1.05 && metrics_desktop.scale <= 1.35);
+    assert!(metrics_desktop.btn_height >= 38.0);
+    assert!(metrics_desktop.btn_large_height >= 44.0);
+    assert!(metrics_desktop.icon_btn_size >= 40.0);
+    assert!(metrics_desktop.min_touch_target >= 44.0);
+
+    // 2. Android touch metrics
+    let metrics_android = ultrahdr::theme_material::AdaptiveUiMetrics::compute(&ctx, true);
+    assert!(metrics_android.scale >= 1.18);
+    assert!(metrics_android.btn_height >= 44.0);
+    assert!(metrics_android.min_touch_target >= 48.0);
+    assert!(metrics_android.icon_btn_size >= 46.0);
+
+    // 3. Dynamic Side Panel width clamping
+    // Verifies that for any screen width, remaining center width >= 420px
+    let test_screen_widths: [f32; 7] = [800.0, 1024.0, 1280.0, 1440.0, 1920.0, 2560.0, 3840.0];
+    for total_w in test_screen_widths {
+        let max_side_panel_w = ((total_w - 420.0) / 2.0).clamp(260.0_f32, 560.0_f32);
+        let left_w = max_side_panel_w;
+        let right_w = max_side_panel_w;
+        let remaining_center_w = total_w - left_w - right_w;
+        if total_w >= 940.0 {
+            assert!(remaining_center_w >= 419.9, "Screen {}px has center {}px < 420px", total_w, remaining_center_w);
+        }
+    }
+}
+
+

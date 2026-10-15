@@ -50,13 +50,18 @@ if %ERRORLEVEL% NEQ 0 (
 )
 cd ..
 
-REM 5. Copie finale de l'APK
+REM 5. Copie finale de l'APK vers dist\android et la racine
+if not exist "dist\android" mkdir "dist\android"
 if exist "android\app\build\outputs\apk\release\app-release.apk" (
+    copy /Y "android\app\build\outputs\apk\release\app-release.apk" "dist\android\ultrahdr-studio.apk" >nul
+    copy /Y "android\app\build\outputs\apk\release\app-release.apk" "dist\android\ultrahdr.apk" >nul
     copy /Y "android\app\build\outputs\apk\release\app-release.apk" "ultrahdr-studio.apk" >nul
     echo.
     echo =====================================================================
     echo   [SUCCES] APK Android genere avec succes :
-    echo   C:\APPLIS\devpython\UltraHDR\ultrahdr-studio.apk
+    echo   - dist\android\ultrahdr-studio.apk
+    echo   - dist\android\ultrahdr.apk
+    echo   - ultrahdr-studio.apk
     echo =====================================================================
 )
 

@@ -65,4 +65,6 @@ android/app/src/main/jniLibs/
 android/local.properties
 android/gradle.properties
 *.apk
+!dist/android/*.apk
 scratch/
+00*.jpg

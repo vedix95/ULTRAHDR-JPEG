@@ -83,13 +83,13 @@ pub fn get_preset_library() -> Vec<HDRPreset> {
         },
         HDRPreset {
             name: "moderate".to_string(),
-            label: "Subtil / Anti-Bruit".to_string(),
-            peak_nits: 600.0,
+            label: "Équilibré Naturel".to_string(),
+            peak_nits: 1000.0,
             sdr_white: 203.0,
             shadow_boost: 1.0,
-            hi_gamma: 1.4,
-            highlight_threshold: 0.75,
-            description: "Rehaussement progressif et maîtrisé pour scènes à faible contraste, évitant toute montée de bruit.".to_string(),
+            hi_gamma: 1.1,
+            highlight_threshold: 0.55,
+            description: "Rehaussement naturel et dynamique pour scènes du quotidien, offrant un éclat HDR saisissant sans dénaturer la scène.".to_string(),
         },
     ]
 }

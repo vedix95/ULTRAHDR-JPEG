@@ -29,9 +29,17 @@ if not exist "..\dist\linux" mkdir "..\dist\linux"
 copy /y "target\release\ultrahdr.exe" "..\dist\windows\ultrahdr.exe" >nul
 copy /y "target\x86_64-unknown-linux-musl\release\ultrahdr" "..\dist\linux\ultrahdr" >nul
 
+cd /d "%~dp0"
+if exist "build_android.bat" (
+    echo.
+    echo [*] Compilation de la version Android (APK)...
+    call "build_android.bat"
+)
+
 echo ============================================================
 echo [V] Compilation terminee avec succes !
 echo   - Windows : dist\windows\ultrahdr.exe
 echo   - Linux   : dist\linux\ultrahdr
+echo   - Android : dist\android\ultrahdr.apk
 echo ============================================================
 pause

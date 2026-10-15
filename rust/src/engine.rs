@@ -453,8 +453,13 @@ pub fn compute_hdr_and_gain_map(
                     w_high.powf(effective_gamma)
                 };
 
-                let mut boost = (effective_s_boost + (effective_peak_boost - effective_s_boost) * highlight_weight)
-                    .clamp(0.3, effective_peak_boost);
+                // Interpolation logarithmique (en EV / stops) pour une progressivité
+                // uniforme et indépendante de peak_nits, garantissant que les très hautes
+                // lumières conservent toute leur dynamique sans écrasement au seuil
+                let log_min = effective_s_boost.log2();
+                let log_max = effective_peak_boost.log2().max(log_min + 0.001);
+                let gain_stops = log_min + (log_max - log_min) * highlight_weight;
+                let mut boost = gain_stops.exp2().clamp(0.3, effective_peak_boost);
 
                 // 4. Noirs (Blacks) : modulation du contraste dans les basses lumières (l_sdr < 0.30)
                 if tonal.blacks != 0.0 && l_sdr < 0.30 {
@@ -565,7 +570,57 @@ pub fn encode_rgb_jpeg(
     Ok(buf)
 }
 
-/// Génère le segment XMP APP1 conforme Adobe / Google Ultra HDR.
+/// Encapsule un document XML dans un marqueur JPEG APP1 (0xFF 0xE1) avec espace de nom XMP.
+pub fn wrap_xmp_payload(xml: &str) -> Vec<u8> {
+    let mut payload = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+    payload.extend_from_slice(xml.as_bytes());
+    let length = (payload.len() + 2) as u16;
+
+    let mut out = Vec::with_capacity(4 + payload.len());
+    out.extend_from_slice(&[0xff, 0xe1]); // Marqueur APP1
+    out.extend_from_slice(&length.to_be_bytes()); // Longueur en Big Endian
+    out.extend_from_slice(&payload);
+    out
+}
+
+/// Génère le segment XMP APP1 pour l'image primaire conforme Google Ultra HDR v1.1 et GContainer.
+pub fn build_primary_xmp(gain_min: f32, gain_max: f32, hdr_capacity: f32, gainmap_size: usize) -> Vec<u8> {
+    let xml = format!(
+        "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n\
+<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"XMP Core 5.5.0\">\n\
+ <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n\
+  <rdf:Description rdf:about=\"\"\n\
+    xmlns:Container=\"http://ns.google.com/photos/1.0/container/\"\n\
+    xmlns:Item=\"http://ns.google.com/photos/1.0/container/item/\"\n\
+    xmlns:hdrgm=\"http://ns.adobe.com/hdr-gain-map/1.0/\"\n\
+   hdrgm:Version=\"1.0\"\n\
+   hdrgm:GainMapMin=\"{gain_min:.6}\"\n\
+   hdrgm:GainMapMax=\"{gain_max:.6}\"\n\
+   hdrgm:Gamma=\"1.0\"\n\
+   hdrgm:OffsetSDR=\"0.015625\"\n\
+   hdrgm:OffsetHDR=\"0.015625\"\n\
+   hdrgm:HDRCapacityMin=\"0.000000\"\n\
+   hdrgm:HDRCapacityMax=\"{hdr_capacity:.6}\"\n\
+   hdrgm:BaseRenditionIsHDR=\"False\">\n\
+   <Container:Directory>\n\
+    <rdf:Seq>\n\
+     <rdf:li rdf:parseType=\"Resource\">\n\
+      <Container:Item Item:Semantic=\"Primary\" Item:Mime=\"image/jpeg\"/>\n\
+     </rdf:li>\n\
+     <rdf:li rdf:parseType=\"Resource\">\n\
+      <Container:Item Item:Semantic=\"GainMap\" Item:Mime=\"image/jpeg\" Item:Length=\"{gainmap_size}\"/>\n\
+     </rdf:li>\n\
+    </rdf:Seq>\n\
+   </Container:Directory>\n\
+  </rdf:Description>\n\
+ </rdf:RDF>\n\
+</x:xmpmeta>\n\
+<?xpacket end=\"w\"?>"
+    );
+    wrap_xmp_payload(&xml)
+}
+
+/// Génère le segment XMP APP1 de la Gain Map conforme Adobe / Google Ultra HDR v1.1.
 pub fn build_xmp_hdrgm(gain_min: f32, gain_max: f32, hdr_capacity: f32) -> Vec<u8> {
     let xml = format!(
         "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n\
@@ -576,24 +631,17 @@ pub fn build_xmp_hdrgm(gain_min: f32, gain_max: f32, hdr_capacity: f32) -> Vec<u
    hdrgm:Version=\"1.0\"\n\
    hdrgm:GainMapMin=\"{gain_min:.6}\"\n\
    hdrgm:GainMapMax=\"{gain_max:.6}\"\n\
+   hdrgm:Gamma=\"1.0\"\n\
+   hdrgm:OffsetSDR=\"0.015625\"\n\
+   hdrgm:OffsetHDR=\"0.015625\"\n\
    hdrgm:HDRCapacityMin=\"0.000000\"\n\
    hdrgm:HDRCapacityMax=\"{hdr_capacity:.6}\"\n\
-   hdrgm:OffsetHDR=\"0.000000\"\n\
-   hdrgm:OffsetSDR=\"0.000000\"/>\n\
+   hdrgm:BaseRenditionIsHDR=\"False\"/>\n\
  </rdf:RDF>\n\
 </x:xmpmeta>\n\
 <?xpacket end=\"w\"?>"
     );
-
-    let mut payload = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
-    payload.extend_from_slice(xml.as_bytes());
-    let length = (payload.len() + 2) as u16;
-
-    let mut out = Vec::with_capacity(4 + payload.len());
-    out.extend_from_slice(&[0xff, 0xe1]); // Marqueur APP1
-    out.extend_from_slice(&length.to_be_bytes()); // Longueur en Big Endian
-    out.extend_from_slice(&payload);
-    out
+    wrap_xmp_payload(&xml)
 }
 
 /// Génère le segment CIPA DC-007 Multi-Picture Format APP2 (90 octets).
@@ -663,21 +711,30 @@ pub fn assemble_ultra_hdr_jpeg(
     exif_segment: Option<&[u8]>,
 ) -> Vec<u8> {
     let hdr_capacity = (peak_nits / sdr_white).max(1.01).log2();
-    let xmp_app1 = build_xmp_hdrgm(gain_min, gain_max, hdr_capacity);
+    let gm_xmp_app1 = build_xmp_hdrgm(gain_min, gain_max, hdr_capacity);
 
     // Gain map JPEG avec injection du XMP après SOI (0xFF 0xD8)
-    let mut gainmap_jpeg = Vec::with_capacity(gainmap_raw_jpeg.len() + xmp_app1.len());
+    let mut gainmap_jpeg = Vec::with_capacity(gainmap_raw_jpeg.len() + gm_xmp_app1.len());
     gainmap_jpeg.extend_from_slice(&gainmap_raw_jpeg[..2]);
-    gainmap_jpeg.extend_from_slice(&xmp_app1);
+    gainmap_jpeg.extend_from_slice(&gm_xmp_app1);
     gainmap_jpeg.extend_from_slice(&gainmap_raw_jpeg[2..]);
 
-    let e = exif_segment.map(|s| s.len()).unwrap_or(0);
-    let a = xmp_app1.len();
-    let b = base_jpeg.len();
     let g = gainmap_jpeg.len();
+    let primary_xmp = build_primary_xmp(gain_min, gain_max, hdr_capacity, g);
 
+    let e = exif_segment.map(|s| s.len()).unwrap_or(0);
+    let a = primary_xmp.len();
+    let b = base_jpeg.len();
+
+    // Spécification CIPA DC-007 MPF :
+    // - primary_size : taille totale de la première image du conteneur (de 0 à l'EOI de l'image de base).
+    // - gainmap_offset : distance relative depuis le début de l'en-tête TIFF MPF ("II") jusqu'au SOI de la Gain Map.
+    // Dans final_jpeg :
+    //   L'en-tête "II" est à l'offset : 2 (SOI) + e (EXIF) + a (XMP) + 8 = e + a + 10.
+    //   La Gain Map commence à l'offset : 2 + e + a + 90 (MPF) + (b - 2) = e + a + b + 90.
+    //   Offset relatif = (e + a + b + 90) - (e + a + 10) = b + 80 (Strictement indépendant de e et a !).
     let primary_size = (e + a + b + 90) as u32;
-    let gainmap_offset = (e + b + 80) as u32;
+    let gainmap_offset = (b + 80) as u32;
 
     let mpf_app2 = build_mpf_app2(primary_size, g as u32, gainmap_offset);
 
@@ -686,7 +743,7 @@ pub fn assemble_ultra_hdr_jpeg(
     if let Some(exif) = exif_segment {
         final_jpeg.extend_from_slice(exif);
     }
-    final_jpeg.extend_from_slice(&xmp_app1);
+    final_jpeg.extend_from_slice(&primary_xmp);
     final_jpeg.extend_from_slice(&mpf_app2);
     final_jpeg.extend_from_slice(&base_jpeg[2..]);
     final_jpeg.extend_from_slice(&gainmap_jpeg);
@@ -807,6 +864,7 @@ pub fn compute_display_headroom_weight(
 }
 
 /// Adapte les luminances HDR (en nits) aux capacités réelles de l'écran de prévisualisation (ISO 21496-1).
+#[allow(dead_code)]
 pub fn adapt_hdr_nits_for_display(
     hdr_nits: &[f32],
     gain_log2: &[f32],

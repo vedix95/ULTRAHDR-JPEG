@@ -96,6 +96,27 @@ public class MainActivity extends NativeActivity {
         }
     }
 
+    /**
+     * Retourne les couleurs dynamiques Material You (Monet) du système Android 12+ (API 31+).
+     * Format: [primary, onPrimary, primaryContainer, onPrimaryContainer, surfaceContainer]
+     */
+    public static int[] getDynamicColors() {
+        if (instance == null) return null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                int primary = instance.getColor(android.R.color.system_accent1_200);
+                int onPrimary = instance.getColor(android.R.color.system_accent1_800);
+                int primaryContainer = instance.getColor(android.R.color.system_accent1_700);
+                int onPrimaryContainer = instance.getColor(android.R.color.system_accent1_100);
+                int surfaceContainer = instance.getColor(android.R.color.system_neutral1_800);
+                return new int[] { primary, onPrimary, primaryContainer, onPrimaryContainer, surfaceContainer };
+            } catch (Exception e) {
+                Log.w(TAG, "Impossible de lire les couleurs Material You: " + e.getMessage());
+            }
+        }
+        return null;
+    }
+
     private void openPickerImpl() {
         try {
             Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
