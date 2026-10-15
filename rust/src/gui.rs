@@ -3916,12 +3916,6 @@ pub fn android_main(app: android_activity::AndroidApp) {
     ANDROID_APP_VM.store(vm_ptr, std::sync::atomic::Ordering::SeqCst);
     ANDROID_APP_ACTIVITY.store(act_ptr, std::sync::atomic::Ordering::SeqCst);
 
-    unsafe {
-        let _ = std::panic::catch_unwind(|| {
-            ndk_context::initialize_android_context(vm_ptr, act_ptr);
-        });
-    }
-
     let mut native_options = eframe::NativeOptions::default();
     native_options.event_loop_builder = Some(Box::new(move |builder| {
         builder.with_android_app(app);
