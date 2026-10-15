@@ -117,8 +117,27 @@ public class MainActivity extends NativeActivity {
         return null;
     }
 
+    // Fichier importé en attente de traitement par Rust
+    public static volatile String pendingImportedPhoto = null;
+    public static volatile boolean isImporting = false;
+
+    public static synchronized String pollImportedPhoto() {
+        if (pendingImportedPhoto != null) {
+            String path = pendingImportedPhoto;
+            pendingImportedPhoto = null;
+            isImporting = false;
+            return path;
+        }
+        return null;
+    }
+
+    public static boolean isPhotoImporting() {
+        return isImporting;
+    }
+
     private void openPickerImpl() {
         try {
+            isImporting = true;
             Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
             intent.setType("image/*");
             intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -139,6 +158,7 @@ public class MainActivity extends NativeActivity {
             );
             Log.i(TAG, "Sélecteur de photos Android lancé.");
         } catch (Exception e) {
+            isImporting = false;
             Log.e(TAG, "Erreur au lancement du sélecteur: " + e.getMessage(), e);
         }
     }
@@ -146,30 +166,51 @@ public class MainActivity extends NativeActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == PICK_IMAGE_REQUEST && resultCode == RESULT_OK && data != null) {
-            Uri uri = data.getData();
-            if (uri == null && data.getClipData() != null && data.getClipData().getItemCount() > 0) {
-                uri = data.getClipData().getItemAt(0).getUri();
+        if (requestCode == PICK_IMAGE_REQUEST) {
+            if (resultCode == RESULT_OK && data != null) {
+                Uri uri = data.getData();
+                if (uri == null && data.getClipData() != null && data.getClipData().getItemCount() > 0) {
+                    uri = data.getClipData().getItemAt(0).getUri();
+                }
+                if (uri != null) {
+                    Log.i(TAG, "Photo sélectionnée dans le sélecteur: " + uri);
+                    copyUriToCacheAsync(uri);
+                    return;
+                }
             }
-            if (uri != null) {
-                Log.i(TAG, "Photo sélectionnée dans le sélecteur: " + uri);
-                copyUriToCacheAsync(uri);
-            }
+            // Annulation ou absence de photo sélectionnée
+            isImporting = false;
         }
     }
 
     private void copyUriToCacheAsync(final Uri uri) {
+        isImporting = true;
         new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
+                    String displayName = "imported_photo.jpg";
+                    try {
+                        android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null);
+                        if (cursor != null) {
+                            int nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                            if (nameIndex >= 0 && cursor.moveToFirst()) {
+                                String name = cursor.getString(nameIndex);
+                                if (name != null && !name.trim().isEmpty()) {
+                                    displayName = name;
+                                }
+                            }
+                            cursor.close();
+                        }
+                    } catch (Exception ignored) {}
+
                     InputStream is = getContentResolver().openInputStream(uri);
                     if (is != null) {
                         File cacheDir = getCacheDir();
                         if (!cacheDir.exists()) {
                             cacheDir.mkdirs();
                         }
-                        File outFile = new File(cacheDir, "imported_photo.jpg");
+                        File outFile = new File(cacheDir, displayName);
                         FileOutputStream fos = new FileOutputStream(outFile);
                         byte[] buf = new byte[65536];
                         int len;
@@ -180,11 +221,17 @@ public class MainActivity extends NativeActivity {
                         fos.close();
                         is.close();
 
-                        Log.i(TAG, "Photo écrite dans le cache: " + outFile.getAbsolutePath() + " (" + outFile.length() + " octets)");
                         File flag = new File(cacheDir, "photo_ready.flag");
                         flag.createNewFile();
+
+                        pendingImportedPhoto = outFile.getAbsolutePath();
+                        isImporting = false;
+                        Log.i(TAG, "Photo écrite dans le cache: " + pendingImportedPhoto + " (" + outFile.length() + " octets)");
+                    } else {
+                        isImporting = false;
                     }
                 } catch (Exception e) {
+                    isImporting = false;
                     Log.e(TAG, "Erreur lors de la copie de l'image: " + e.getMessage(), e);
                 }
             }

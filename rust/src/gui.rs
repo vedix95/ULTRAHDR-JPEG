@@ -30,17 +30,19 @@ pub enum ViewerMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigPane {
     Tonal,       // 🎨 Tonalité Pro, Courbe, Saturation
-    Simulation,  // 🖥️ Simulation EDR & Tone-Mapping
-    Engine,      // 📁 Source & Profils HDR
-    Export,      // 💾 Export Ultra HDR & Traitement par lot
+    Profiles,    // 📑 Profils HDR & Proposition IA
+    Engine,      // ⚙️ Moteur Ultra HDR (nits, gamma, seuil)
+    Simulation,  // 🎛️ Simulation EDR & Tone-Mapping
+    Export,      // 💾 Export Ultra HDR & Galerie
 }
 
 impl ConfigPane {
     pub fn icon(&self) -> &'static str {
         match self {
             ConfigPane::Tonal => "🎨",
-            ConfigPane::Simulation => "🖥️",
-            ConfigPane::Engine => "📁",
+            ConfigPane::Profiles => "📑",
+            ConfigPane::Engine => "⚙️",
+            ConfigPane::Simulation => "🎛️",
             ConfigPane::Export => "💾",
         }
     }
@@ -48,8 +50,9 @@ impl ConfigPane {
     pub fn title(&self) -> &'static str {
         match self {
             ConfigPane::Tonal => "Tonalité",
+            ConfigPane::Profiles => "Profils",
+            ConfigPane::Engine => "Moteur",
             ConfigPane::Simulation => "Rendu",
-            ConfigPane::Engine => "Profils",
             ConfigPane::Export => "Export",
         }
     }
@@ -173,6 +176,9 @@ pub struct UltraHdrApp {
     pub export_error_modal: Option<String>,
     pub m3_theme: crate::theme_material::DynamicM3Theme,
     pub ui_scale: f32,
+    pub mobile_hide_panels: bool,
+    pub mobile_drawer_collapsed: bool,
+    pub show_mobile_options_menu: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -269,6 +275,9 @@ impl UltraHdrApp {
             export_error_modal: None,
             m3_theme,
             ui_scale: 1.0,
+            mobile_hide_panels: false,
+            mobile_drawer_collapsed: false,
+            show_mobile_options_menu: false,
         }
     }
 
@@ -422,6 +431,64 @@ pub fn trigger_android_photo_picker() {
             }
         }
     }
+}
+
+#[cfg(target_os = "android")]
+pub fn poll_android_imported_photo() -> Option<String> {
+    let ctx = ndk_context::android_context();
+    let vm_ptr = ctx.vm();
+    if vm_ptr.is_null() {
+        return None;
+    }
+    unsafe {
+        if let Ok(vm) = jni::JavaVM::from_raw(vm_ptr as *mut _) {
+            if let Ok(mut env) = vm.attach_current_thread() {
+                if let Ok(class) = env.find_class("com/ultrahdr/studio/MainActivity") {
+                    if let Ok(res) = env.call_static_method(&class, "pollImportedPhoto", "()Ljava/lang/String;", &[]) {
+                        if let Ok(obj) = res.l() {
+                            if !obj.as_raw().is_null() {
+                                let jstr = jni::objects::JString::from(obj);
+                                let out_str = env.get_string(&jstr).ok().map(|s| s.to_string_lossy().to_string());
+                                if out_str.is_some() {
+                                    return out_str;
+                                }
+                            }
+                        }
+                    }
+                }
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_clear();
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "android")]
+pub fn is_android_photo_importing() -> bool {
+    let ctx = ndk_context::android_context();
+    let vm_ptr = ctx.vm();
+    if vm_ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        if let Ok(vm) = jni::JavaVM::from_raw(vm_ptr as *mut _) {
+            if let Ok(mut env) = vm.attach_current_thread() {
+                if let Ok(class) = env.find_class("com/ultrahdr/studio/MainActivity") {
+                    if let Ok(res) = env.call_static_method(&class, "isPhotoImporting", "()Z", &[]) {
+                        if let Ok(b) = res.z() {
+                            return b;
+                        }
+                    }
+                }
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_clear();
+                }
+            }
+        }
+    }
+    false
 }
 
 #[cfg(target_os = "android")]
@@ -1080,22 +1147,45 @@ impl eframe::App for UltraHdrApp {
         // ── Importation automatique depuis la galerie Android (via MainActivity) ──
         #[cfg(target_os = "android")]
         {
-            let cache_dirs = [
-                PathBuf::from("/data/data/com.ultrahdr.studio/cache"),
-                PathBuf::from("/data/user/0/com.ultrahdr.studio/cache"),
-                PathBuf::from("/storage/emulated/0/Android/data/com.ultrahdr.studio/cache"),
-                PathBuf::from("/sdcard/Android/data/com.ultrahdr.studio/cache"),
-            ];
-            for c_dir in &cache_dirs {
-                let flag = c_dir.join("photo_ready.flag");
-                let photo = c_dir.join("imported_photo.jpg");
-                if flag.exists() && photo.exists() {
-                    let _ = std::fs::remove_file(&flag);
-                    self.load_file(&photo, ctx);
+            if let Some(photo_path) = Self::poll_android_imported_photo() {
+                let path = PathBuf::from(&photo_path);
+                if path.exists() {
+                    self.load_file(&path, ctx);
                     self.show_open_dialog = false;
                     self.set_status("Photo importée depuis la galerie Android !", Color32::from_rgb(118, 214, 213));
-                    break;
                 }
+            } else {
+                let cache_dirs = [
+                    PathBuf::from("/data/data/com.ultrahdr.studio/cache"),
+                    PathBuf::from("/data/user/0/com.ultrahdr.studio/cache"),
+                    PathBuf::from("/storage/emulated/0/Android/data/com.ultrahdr.studio/cache"),
+                    PathBuf::from("/sdcard/Android/data/com.ultrahdr.studio/cache"),
+                ];
+                for c_dir in &cache_dirs {
+                    let flag = c_dir.join("photo_ready.flag");
+                    if flag.exists() {
+                        let _ = std::fs::remove_file(&flag);
+                        if let Ok(entries) = std::fs::read_dir(c_dir) {
+                            for entry in entries.flatten() {
+                                let p = entry.path();
+                                if p.is_file() {
+                                    let fname = p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                                    if fname.starts_with("imported_photo") || fname.ends_with(".jpg") || fname.ends_with(".jpeg") || fname.ends_with(".png") || fname.ends_with(".webp") {
+                                        self.load_file(&p, ctx);
+                                        self.show_open_dialog = false;
+                                        self.set_status("Photo importée depuis la galerie Android !", Color32::from_rgb(118, 214, 213));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Réveil actif pendant l'importation pour réagir immédiatement à la fin du thread Java
+            if Self::is_android_photo_importing() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
             }
         }
 
@@ -1115,13 +1205,13 @@ impl eframe::App for UltraHdrApp {
             .frame(egui::Frame::none().fill(self.m3_theme.surface_0).inner_margin(egui::Margin::symmetric(if is_vertical { 4.0 } else { 14.0 }, 4.0)))
             .show(ctx, |ui| {
                 if is_vertical {
-                    // En-tête compact optimisé mobile / écran vertical : composants Material 3
+                    // En-tête compact optimisé mobile / écran vertical : style Lightroom Mobile
                     ui.horizontal(|ui| {
                         ui.add_space(2.0);
                         ui.label(egui::RichText::new("✨ UltraHDR").size(15.0).strong().color(self.m3_theme.primary));
 
                         if let Some(img) = &self.loaded_image {
-                            if ui.available_width() > 160.0 {
+                            if ui.available_width() > 170.0 {
                                 let display_name = if img.filename.len() > 10 {
                                     format!("{}...", &img.filename[..8])
                                 } else {
@@ -1133,6 +1223,17 @@ impl eframe::App for UltraHdrApp {
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(2.0);
+
+                            // 1. Bouton Menu d'options ⋮ (Échelle UI, Démo, Traitement par lot, Infos Nits)
+                            let more_btn = egui::Button::new(egui::RichText::new("⋮").size(17.0).color(self.m3_theme.on_surface))
+                                .fill(Color32::TRANSPARENT)
+                                .rounding(Rounding::same(16.0))
+                                .min_size(Vec2::new(32.0, 32.0));
+                            if ui.add(more_btn).on_hover_text("Options et outils avancés").clicked() {
+                                self.show_mobile_options_menu = !self.show_mobile_options_menu;
+                            }
+
+                            // 2. Bouton Exporter 💾
                             let export_enabled = self.loaded_image.is_some();
                             if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "💾", "Exporter JPEG Ultra HDR").clicked() {
                                 if export_enabled {
@@ -1141,14 +1242,32 @@ impl eframe::App for UltraHdrApp {
                                 }
                             }
 
+                            // 3. Bouton Ouvrir 📂
                             if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "📂", "Ouvrir une image...").clicked() {
                                 self.trigger_pick_file(ctx);
                             }
 
-                            if ui.available_width() > 50.0 {
-                                if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "⚡", "Traitement par lot...").clicked() {
-                                    self.show_batch_dialog = true;
-                                }
+                            // 4. Bouton Plein Écran ⛶ (masque le deck d'outils inférieur)
+                            let fs_icon = if self.mobile_hide_panels { "🎛" } else { "⛶" };
+                            let fs_tip = if self.mobile_hide_panels { "Afficher les outils d'édition" } else { "Plein écran (masquer les outils)" };
+                            if crate::theme_material::m3_icon_button(ui, &self.m3_theme, fs_icon, fs_tip).clicked() {
+                                self.mobile_hide_panels = !self.mobile_hide_panels;
+                            }
+
+                            // 5. Bouton Comparer 👁 (tactile instantané)
+                            let (comp_bg, comp_fg, comp_stroke) = if self.compare_toggled {
+                                (self.m3_theme.primary_container, self.m3_theme.on_primary_container, Stroke::new(1.2_f32, self.m3_theme.primary))
+                            } else {
+                                (self.m3_theme.surface_container, self.m3_theme.on_surface_variant, Stroke::new(1.0_f32, self.m3_theme.outline_variant))
+                            };
+                            let comp_btn = egui::Button::new(egui::RichText::new("👁").size(15.0).color(comp_fg))
+                                .fill(comp_bg)
+                                .stroke(comp_stroke)
+                                .rounding(Rounding::same(16.0))
+                                .min_size(Vec2::new(34.0, 32.0));
+                            let comp_resp = ui.add(comp_btn).on_hover_text("Comparer avec l'Original");
+                            if comp_resp.clicked() {
+                                self.compare_toggled = !self.compare_toggled;
                             }
                         });
                     });
@@ -1410,6 +1529,78 @@ impl eframe::App for UltraHdrApp {
                         if ui.button("Fermer").clicked() {
                             self.show_batch_dialog = false;
                         }
+                    });
+                });
+        }
+
+        // ── Boîte de dialogue Menu d'Options Mobile (⋮) ──
+        if self.show_mobile_options_menu {
+            let win_w = (screen_rect.width() - 32.0).clamp(280.0, 380.0);
+            egui::Window::new("⚙️ Options & Utilitaires")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .fixed_size(egui::vec2(win_w, 330.0))
+                .frame(
+                    egui::Frame::window(&ctx.style())
+                        .fill(self.m3_theme.surface_container)
+                        .stroke(Stroke::new(1.5f32, self.m3_theme.primary))
+                        .rounding(Rounding::same(16.0))
+                        .inner_margin(egui::Margin::same(16.0)),
+                )
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        // 1. Échelle de l'interface
+                        ui.label(egui::RichText::new("🔍 Taille de l'interface").strong().size(13.0).color(Color32::WHITE));
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if crate::theme_material::m3_zoom_stepper(ui, &self.m3_theme, &mut self.ui_scale) {
+                                ctx.set_zoom_factor(self.ui_scale);
+                            }
+                        });
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        // 2. Traitement par lot
+                        if crate::theme_material::m3_filled_button(ui, &self.m3_theme, "⚡", "Traitement par lot (Dossier)...", 36.0).clicked() {
+                            self.show_batch_dialog = true;
+                            self.show_mobile_options_menu = false;
+                        }
+
+                        ui.add_space(8.0);
+
+                        // 3. Charger la Démo HDR
+                        if crate::theme_material::m3_tonal_button(ui, &self.m3_theme, "🌅", "Charger Démo Ultra HDR (1000+ nits)", false).clicked() {
+                            self.load_demo_image(ctx);
+                            self.show_mobile_options_menu = false;
+                        }
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        // 4. Matériel HDR & Infos
+                        let (badge_text, hover_tip) = if self.is_hdr_display_active {
+                            (
+                                format!("🟢 HDR • {:.0} nits", self.display_peak_nits),
+                                format!("Écran HDR actif : {}\nPic physique : {:.0} nits", self.display_info_str, self.display_peak_nits),
+                            )
+                        } else {
+                            (
+                                format!("🖥️ SDR • {:.0} nits", self.display_peak_nits),
+                                format!("Écran standard détecté : {}\nSimulation et tonemapping actifs", self.display_info_str),
+                            )
+                        };
+                        crate::theme_material::m3_status_badge(ui, &self.m3_theme, &badge_text, self.is_hdr_display_active, &hover_tip);
+
+                        ui.add_space(12.0);
+                        ui.vertical_centered(|ui| {
+                            if ui.button(egui::RichText::new("Fermer").color(Color32::WHITE).size(13.0)).clicked() {
+                                self.show_mobile_options_menu = false;
+                            }
+                        });
                     });
                 });
         }
@@ -1707,16 +1898,21 @@ impl eframe::App for UltraHdrApp {
 
         // ── 5. Panneau Inférieur (Deck de Commande Vertical ou Dock Bureau) ──
         if is_vertical {
-            let total_h = screen_rect.height();
-            let deck_h = (total_h * 0.40).clamp(200.0, 310.0);
-            egui::TopBottomPanel::bottom("vertical_control_deck")
-                .resizable(true)
-                .default_height(deck_h)
-                .height_range(180.0..=550.0)
-                .frame(egui::Frame::none().fill(Color32::from_rgb(16, 18, 26)).inner_margin(egui::Margin::symmetric(4.0, 4.0)))
-                .show(ctx, |ui| {
-                    self.ui_vertical_control_deck(ui, ctx);
-                });
+            if !self.mobile_hide_panels {
+                let total_h = screen_rect.height();
+                let deck_h = if self.mobile_drawer_collapsed {
+                    50.0 // Juste la barre d'onglets pour laisser 90% d'espace à l'image
+                } else {
+                    (total_h * 0.38).clamp(210.0, 285.0)
+                };
+                egui::TopBottomPanel::bottom("vertical_control_deck")
+                    .resizable(false)
+                    .exact_height(deck_h)
+                    .frame(egui::Frame::none().fill(Color32::from_rgb(16, 18, 26)).inner_margin(egui::Margin::symmetric(4.0, 4.0)))
+                    .show(ctx, |ui| {
+                        self.ui_vertical_control_deck(ui, ctx);
+                    });
+            }
         } else if self.bottom_panel_visible {
             egui::TopBottomPanel::bottom("bottom_dock")
                 .resizable(true)
@@ -1752,10 +1948,12 @@ impl UltraHdrApp {
             });
         });
         ui.add_space(4.0);
+        self.ui_panel_profiles_content(ui, ctx, false);
+        ui.add_space(8.0);
         self.ui_panel_engine_content(ui, ctx, false);
     }
 
-    fn ui_panel_engine_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_vertical: bool) {
+    fn ui_panel_profiles_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_vertical: bool) {
         let mut params_changed = false;
         let mut preset_to_apply = None;
 
@@ -1794,11 +1992,12 @@ impl UltraHdrApp {
                     ui.label(egui::RichText::new(&analysis.explanation).small().color(Color32::from_rgb(180, 185, 200)));
 
                     ui.add_space(6.0);
-                    // Grille de métadonnées (verticale si écran portrait)
+                    // Grille de métadonnées
                     if is_vertical {
-                        draw_meta_box(ui, "Hautes Lumières", &format!("{:.1}%", analysis.highlight_ratio_pct));
-                        ui.add_space(3.0);
-                        draw_meta_box(ui, "Contraste", &format!("{:.0}:1", analysis.contrast_ratio));
+                        ui.horizontal(|ui| {
+                            draw_meta_box(ui, "Hautes Lumières", &format!("{:.1}%", analysis.highlight_ratio_pct));
+                            draw_meta_box(ui, "Contraste", &format!("{:.0}:1", analysis.contrast_ratio));
+                        });
                     } else {
                         ui.horizontal(|ui| {
                             draw_meta_box(ui, "Hautes Lumières", &format!("{:.1}%", analysis.highlight_ratio_pct));
@@ -1810,23 +2009,6 @@ impl UltraHdrApp {
                     if crate::theme_material::m3_filled_button(ui, &self.m3_theme, "✨", "Appliquer la proposition recommandée", 32.0).clicked() {
                         preset_to_apply = Some(analysis.recommended_preset.clone());
                     }
-
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("Profils prédéfinis :").size(11.5).color(self.m3_theme.on_surface_variant));
-
-                    // Boutons sélecteurs de profils M3
-                    for preset in get_preset_library() {
-                        let is_cur = (self.params.peak_nits - preset.peak_nits).abs() < 1.0
-                            && (self.params.highlight_threshold - preset.highlight_threshold).abs() < 0.02;
-
-                        if crate::theme_material::m3_tonal_button(ui, &self.m3_theme, "", &preset.label, is_cur)
-                            .on_hover_text(&preset.description)
-                            .clicked()
-                        {
-                            preset_to_apply = Some(preset);
-                        }
-                        ui.add_space(3.0);
-                    }
                 } else {
                     ui.label(egui::RichText::new("En attente d'image...").color(Color32::GRAY));
                     ui.label(egui::RichText::new("Chargez une photo pour analyser son potentiel Ultra HDR.").small().color(Color32::DARK_GRAY));
@@ -1835,12 +2017,51 @@ impl UltraHdrApp {
         });
         ui.add_space(8.0);
 
+        // ── 2. CARTE : 📑 Profils Prédéfinis (1-Tap) ──
+        card_frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("📑").size(14.0));
+                ui.label(egui::RichText::new("Profils Ultra HDR (1-Tap)").strong().size(13.0).color(Color32::WHITE));
+            });
+
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            for preset in get_preset_library() {
+                let is_cur = (self.params.peak_nits - preset.peak_nits).abs() < 1.0
+                    && (self.params.highlight_threshold - preset.highlight_threshold).abs() < 0.02;
+
+                if crate::theme_material::m3_tonal_button(ui, &self.m3_theme, "✨", &preset.label, is_cur)
+                    .on_hover_text(&preset.description)
+                    .clicked()
+                {
+                    preset_to_apply = Some(preset);
+                }
+                ui.add_space(3.0);
+            }
+        });
+
         if let Some(preset) = preset_to_apply {
             self.apply_preset(&preset);
             params_changed = true;
         }
 
-        // ── 2. CARTE : ⚙️ Réglages Moteur Ultra HDR ──
+        if params_changed {
+            self.recompute_and_update_textures(ctx);
+        }
+    }
+
+    fn ui_panel_engine_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, _is_vertical: bool) {
+        let mut params_changed = false;
+
+        let card_frame = egui::Frame::none()
+            .fill(Color32::from_rgb(22, 24, 33))
+            .stroke(Stroke::new(1.0f32, Color32::from_rgb(42, 46, 64)))
+            .rounding(Rounding::same(8.0))
+            .inner_margin(egui::Margin::symmetric(12.0, 10.0));
+
+        // ── CARTE : ⚙️ Réglages Moteur Ultra HDR ──
         card_frame.show(ui, |ui| {
             let chevron = if self.card_settings_open { "▼" } else { "▶" };
             let header_resp = ui.horizontal(|ui| {
@@ -2395,52 +2616,70 @@ impl UltraHdrApp {
     fn ui_vertical_control_deck(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let panes = [
             ConfigPane::Tonal,
-            ConfigPane::Simulation,
+            ConfigPane::Profiles,
             ConfigPane::Engine,
+            ConfigPane::Simulation,
             ConfigPane::Export,
         ];
 
         let avail_w = ui.available_width();
         if avail_w < 540.0 {
-            // Disposition Smartphone Portrait Étroite (16:9, 18:9, 19.5:9, 20:9, 21:9) :
-            // 4 Onglets Material 3 en 1 SEULE ligne horizontale parfaitement répartie
+            // Disposition Smartphone Portrait Étroite (Lightroom Mobile deck) :
+            // 5 Onglets Material 3 + Bouton Réduire/Agrandir en 1 SEULE ligne horizontale
             ui.vertical(|ui| {
-                let tab_w = ((avail_w - 4.0 - 3.0 * 4.0) / 4.0).max(42.0);
+                let btn_w = 26.0;
+                let tab_w = ((avail_w - btn_w - 14.0) / 5.0).max(34.0);
                 ui.horizontal(|ui| {
                     ui.add_space(2.0);
                     for pane in panes {
                         let is_active = self.active_config_pane == pane;
                         if crate::theme_material::material_tab(ui, &self.m3_theme, is_active, pane.icon(), pane.title(), tab_w).clicked() {
-                            self.active_config_pane = pane;
+                            if is_active && !self.mobile_drawer_collapsed {
+                                self.mobile_drawer_collapsed = true;
+                            } else {
+                                self.active_config_pane = pane;
+                                self.mobile_drawer_collapsed = false;
+                            }
                         }
+                    }
+                    let chevron = if self.mobile_drawer_collapsed { "▲" } else { "▼" };
+                    let chev_btn = egui::Button::new(egui::RichText::new(chevron).size(13.0).color(Color32::from_rgb(170, 180, 205)))
+                        .fill(self.m3_theme.surface_container)
+                        .stroke(Stroke::new(1.0f32, self.m3_theme.outline_variant))
+                        .rounding(Rounding::same(12.0));
+                    if ui.add_sized([btn_w, 36.0], chev_btn).on_hover_text("Réduire / Déployer le panneau").clicked() {
+                        self.mobile_drawer_collapsed = !self.mobile_drawer_collapsed;
                     }
                     ui.add_space(2.0);
                 });
 
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
+                if !self.mobile_drawer_collapsed {
+                    ui.add_space(3.0);
+                    ui.separator();
+                    ui.add_space(3.0);
 
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.vertical(|ui| {
-                            match self.active_config_pane {
-                                ConfigPane::Tonal => self.ui_panel_tonal_content(ui, ctx, true),
-                                ConfigPane::Simulation => self.ui_panel_simulation_content(ui, ctx, true),
-                                ConfigPane::Engine => self.ui_panel_engine_content(ui, ctx, true),
-                                ConfigPane::Export => self.ui_panel_export_content(ui, ctx, true),
-                            }
-                            #[cfg(target_os = "android")]
-                            ui.add_space(28.0);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                match self.active_config_pane {
+                                    ConfigPane::Tonal => self.ui_panel_tonal_content(ui, ctx, true),
+                                    ConfigPane::Profiles => self.ui_panel_profiles_content(ui, ctx, true),
+                                    ConfigPane::Engine => self.ui_panel_engine_content(ui, ctx, true),
+                                    ConfigPane::Simulation => self.ui_panel_simulation_content(ui, ctx, true),
+                                    ConfigPane::Export => self.ui_panel_export_content(ui, ctx, true),
+                                }
+                                #[cfg(target_os = "android")]
+                                ui.add_space(28.0);
+                            });
                         });
-                    });
+                }
             });
         } else {
             // Disposition Foldable dépliée / Tablette : Rail vertical gauche + contenu droit
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.set_width(110.0);
+                    ui.set_width(115.0);
                     for pane in panes {
                         let is_active = self.active_config_pane == pane;
                         let label = format!("{} {}", pane.icon(), pane.title());
@@ -2462,8 +2701,9 @@ impl UltraHdrApp {
                             ui.vertical(|ui| {
                                 match self.active_config_pane {
                                     ConfigPane::Tonal => self.ui_panel_tonal_content(ui, ctx, true),
-                                    ConfigPane::Simulation => self.ui_panel_simulation_content(ui, ctx, true),
+                                    ConfigPane::Profiles => self.ui_panel_profiles_content(ui, ctx, true),
                                     ConfigPane::Engine => self.ui_panel_engine_content(ui, ctx, true),
+                                    ConfigPane::Simulation => self.ui_panel_simulation_content(ui, ctx, true),
                                     ConfigPane::Export => self.ui_panel_export_content(ui, ctx, true),
                                 }
                             });
@@ -2505,69 +2745,44 @@ impl UltraHdrApp {
 
                 let avail_w = ui.available_width();
                 if is_vertical || avail_w < 520.0 {
-                    // Disposition 2 lignes nette et aérée : aucune superposition possible sur mobile ou écran étroit
-                    // Ligne 1 : Modes de visionnage + Bouton Comparer
+                    // Toolbar mobile 1 ligne moderne, aérée et ultra-efficace (Lightroom Mobile)
                     ui.horizontal(|ui| {
                         ui.add_space(2.0);
-                        let comp_w = 42.0;
-                        let sep_w = 16.0;
-                        let modes_w = (ui.available_width() - comp_w - sep_w - 6.0).max(160.0);
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(modes_w, 36.0),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                if crate::theme_material::m3_icon_segmented_button(ui, &self.m3_theme, &mode_options, &mut self.mode) {
-                                    mode_changed = true;
+                        if crate::theme_material::m3_icon_segmented_button(ui, &self.m3_theme, &mode_options, &mut self.mode) {
+                            mode_changed = true;
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(2.0);
+                            let fit_btn = egui::Button::new(egui::RichText::new("1:1").size(11.5).strong().color(self.m3_theme.on_surface))
+                                .fill(self.m3_theme.surface_container)
+                                .stroke(Stroke::new(1.0_f32, self.m3_theme.outline_variant))
+                                .rounding(Rounding::same(14.0))
+                                .min_size(Vec2::new(34.0, 32.0));
+                            if ui.add(fit_btn).on_hover_text("Taille réelle 1:1").clicked() {
+                                self.zoom = 1.0;
+                                self.pan = Vec2::ZERO;
+                            }
+
+                            ui.add_space(2.0);
+
+                            let (tat_bg, tat_fg, tat_stroke) = if self.targeted_tool_active {
+                                (self.m3_theme.primary_container, self.m3_theme.on_primary_container, Stroke::new(1.2_f32, self.m3_theme.primary))
+                            } else {
+                                (self.m3_theme.surface_container, self.m3_theme.on_surface_variant, Stroke::new(1.0_f32, self.m3_theme.outline_variant))
+                            };
+                            let tat_btn = egui::Button::new(egui::RichText::new("🎯").size(15.0).color(tat_fg))
+                                .fill(tat_bg)
+                                .stroke(tat_stroke)
+                                .rounding(Rounding::same(14.0))
+                                .min_size(Vec2::new(34.0, 32.0));
+                            if ui.add(tat_btn).on_hover_text("Outil Ciblé Tonalité Pro (Lightroom TAT)").clicked() {
+                                self.targeted_tool_active = !self.targeted_tool_active;
+                                if !self.targeted_tool_active {
+                                    self.hovered_zone = None;
                                 }
-                            },
-                        );
-
-                        ui.add_space(3.0);
-                        ui.separator();
-                        ui.add_space(3.0);
-
-                        let compare_tooltip = if is_vertical { "Comparer avec l'Original [Espace]" } else { "Comparer avec l'Original [Espace / \\]" };
-                        let (comp_bg, comp_fg, comp_stroke) = if is_compare_active {
-                            (self.m3_theme.primary_container, self.m3_theme.on_primary_container, Stroke::new(1.2_f32, self.m3_theme.primary))
-                        } else {
-                            (self.m3_theme.surface_container, self.m3_theme.on_surface_variant, Stroke::new(1.0_f32, self.m3_theme.outline_variant))
-                        };
-                        let comp_btn = egui::Button::new(egui::RichText::new("👁").size(16.5).color(comp_fg))
-                            .fill(comp_bg)
-                            .stroke(comp_stroke)
-                            .rounding(Rounding::same(18.0))
-                            .min_size(Vec2::new(38.0, 34.0));
-                        if ui.add(comp_btn).on_hover_text(compare_tooltip).clicked() {
-                            self.compare_toggled = !self.compare_toggled;
-                        }
-                        ui.add_space(2.0);
-                    });
-
-                    ui.add_space(3.0);
-
-                    // Ligne 2 : Commandes de zoom centrées et parfaitement proportionnées
-                    ui.horizontal_centered(|ui| {
-                        let fit_btn = egui::Button::new(egui::RichText::new("⛶").size(15.0).color(self.m3_theme.on_surface))
-                            .fill(self.m3_theme.surface_container)
-                            .stroke(Stroke::new(1.0_f32, self.m3_theme.outline_variant))
-                            .rounding(Rounding::same(16.0))
-                            .min_size(Vec2::new(36.0, 30.0));
-                        if ui.add(fit_btn).on_hover_text("Taille réelle 1:1").clicked() {
-                            self.zoom = 1.0;
-                            self.pan = Vec2::ZERO;
-                        }
-
-                        ui.add_space(4.0);
-
-                        if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "➖", "Dézoomer").clicked() {
-                            self.zoom = (self.zoom / 1.25).clamp(0.2, 8.0);
-                        }
-
-                        crate::theme_material::m3_value_pill(ui, &self.m3_theme, &format!("{:.0}%", self.zoom * 100.0));
-
-                        if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "➕", "Zoomer").clicked() {
-                            self.zoom = (self.zoom * 1.25).clamp(0.2, 8.0);
-                        }
+                            }
+                        });
                     });
                 } else {
                     // Disposition standard bureau sur 1 seule ligne, avec séparation nette sans superposition
@@ -2629,6 +2844,35 @@ impl UltraHdrApp {
             });
 
         if self.loaded_image.is_none() {
+            #[cfg(target_os = "android")]
+            let is_importing = Self::is_android_photo_importing();
+            #[cfg(not(target_os = "android"))]
+            let is_importing = false;
+
+            if is_importing {
+                egui::Frame::none()
+                    .inner_margin(egui::Margin::symmetric(if is_vertical { 8.0 } else { 16.0 }, 12.0))
+                    .show(ui, |ui| {
+                        ui.centered_and_justified(|ui| {
+                            egui::Frame::none()
+                                .fill(Color32::from_rgb(20, 22, 30))
+                                .stroke(Stroke::new(1.5f32, Color32::from_rgb(0, 180, 255)))
+                                .rounding(Rounding::same(16.0))
+                                .inner_margin(egui::Margin::symmetric(24.0, 32.0))
+                                .show(ui, |ui| {
+                                    ui.vertical_centered(|ui| {
+                                        ui.spinner();
+                                        ui.add_space(12.0);
+                                        ui.heading(egui::RichText::new("Importation de la photo...").size(18.0).color(Color32::WHITE));
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Copie depuis la galerie Android et décodage HDR en cours...").size(12.5).color(Color32::from_rgb(160, 180, 215)));
+                                    });
+                                });
+                        });
+                    });
+                return;
+            }
+
             // Zone de dépôt vide élégante avec marge minimale pour ne pas toucher les bords
             egui::Frame::none()
                 .inner_margin(egui::Margin::symmetric(if is_vertical { 4.0 } else { 16.0 }, 4.0))
@@ -2638,28 +2882,30 @@ impl UltraHdrApp {
                             .fill(Color32::from_rgb(20, 22, 30))
                             .stroke(Stroke::new(1.5f32, Color32::from_rgb(50, 56, 78)))
                             .rounding(Rounding::same(12.0))
-                            .inner_margin(egui::Margin::symmetric(if is_vertical { 16.0 } else { 40.0 }, if is_vertical { 20.0 } else { 36.0 }))
+                            .inner_margin(egui::Margin::symmetric(if is_vertical { 12.0 } else { 40.0 }, if is_vertical { 16.0 } else { 36.0 }))
                             .show(ui, |ui| {
                                 ui.vertical_centered(|ui| {
-                                    ui.label(egui::RichText::new("📷").size(48.0));
-                                    ui.add_space(8.0);
-                                    ui.heading(egui::RichText::new("Glissez-déposez n'importe quelle photo ici").size(20.0).color(Color32::WHITE));
+                                    ui.label(egui::RichText::new("📷").size(if is_vertical { 40.0 } else { 48.0 }));
+                                    ui.add_space(6.0);
+                                    let head_txt = if is_vertical { "Ouvrez une photo pour commencer" } else { "Glissez-déposez n'importe quelle photo ici" };
+                                    ui.heading(egui::RichText::new(head_txt).size(if is_vertical { 17.0 } else { 20.0 }).color(Color32::WHITE));
                                     ui.add_space(4.0);
                                     ui.label(
                                         egui::RichText::new(
-                                            "Prend en charge tous les formats : Camera RAW, OpenEXR (.exr), Radiance HDR (.hdr), Apple HEIC, TIFF 16-bit, JPEG, PNG, WebP",
+                                            "Camera RAW, OpenEXR (.exr), Radiance HDR (.hdr), Apple HEIC, TIFF 16-bit, JPEG, PNG, WebP",
                                         )
-                                        .size(13.0)
+                                        .size(if is_vertical { 11.5 } else { 13.0 })
                                         .color(Color32::from_rgb(160, 165, 185)),
                                     );
-                                    ui.add_space(16.0);
+                                    ui.add_space(14.0);
+                                    let btn_w = if is_vertical { (ui.available_width() - 20.0).clamp(200.0, 260.0) } else { 220.0 };
                                     let btn_browse = egui::Button::new(
                                         egui::RichText::new("Sélectionner une photo...").strong().size(14.0).color(Color32::WHITE),
                                     )
                                     .fill(Color32::from_rgb(0, 120, 212))
                                     .rounding(Rounding::same(24.0));
 
-                                    if ui.add_sized([220.0, 42.0], btn_browse).clicked() {
+                                    if ui.add_sized([btn_w, 42.0], btn_browse).clicked() {
                                         self.trigger_pick_file(ctx);
                                     }
 
@@ -2670,7 +2916,7 @@ impl UltraHdrApp {
                                     .fill(Color32::from_rgb(38, 55, 80))
                                     .rounding(Rounding::same(24.0));
 
-                                    if ui.add_sized([220.0, 38.0], btn_demo).clicked() {
+                                    if ui.add_sized([btn_w, 38.0], btn_demo).clicked() {
                                         self.load_demo_image(ctx);
                                     }
                                 });
@@ -2683,6 +2929,18 @@ impl UltraHdrApp {
         // Zone d'affichage interactive avec Zoom et Pan
         let available_size = ui.available_size();
         let (rect, response) = ui.allocate_exact_size(available_size, egui::Sense::click_and_drag());
+
+        // Zoom tactile multi-touch (pinch-to-zoom)
+        let touch_zoom = ctx.input(|i| i.zoom_delta());
+        if touch_zoom != 1.0 && response.hovered() {
+            let new_zoom = (self.zoom * touch_zoom).clamp(0.15, 10.0);
+            if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                let center = rect.center() + self.pan;
+                let ratio = new_zoom / self.zoom;
+                self.pan = ((center - pos) * ratio) + (pos - rect.center());
+            }
+            self.zoom = new_zoom;
+        }
 
         // Zoom à la molette centré sur le curseur de la souris
         let scroll_delta = ctx.input(|i| i.raw_scroll_delta.y);
@@ -2720,10 +2978,12 @@ impl UltraHdrApp {
 
         // Calcul STRICT de la taille pour préserver le ratio exact à TOUS les niveaux de zoom avec marge de 2px sur les bords
         let view_rect = rect.shrink2(Vec2::new(2.0, 2.0));
-        let (base_w, base_h) = if view_rect.width() / view_rect.height() > aspect {
-            (view_rect.height() * aspect, view_rect.height())
+        let safe_w = view_rect.width().max(40.0);
+        let safe_h = view_rect.height().max(40.0);
+        let (base_w, base_h) = if safe_w / safe_h > aspect {
+            (safe_h * aspect, safe_h)
         } else {
-            (view_rect.width(), view_rect.width() / aspect)
+            (safe_w, safe_w / aspect)
         };
 
         let draw_w = base_w * self.zoom;
@@ -2754,8 +3014,9 @@ impl UltraHdrApp {
                 ViewerMode::Split => {
                     if let (Some(tex_sdr), Some(tex_hdr)) = (&self.tex_original_sdr, &self.tex_hdr_preview) {
                         self.split_pos = self.split_pos.clamp(0.04, 0.96);
-                        let split_x = (img_rect.left() + img_rect.width() * self.split_pos)
-                            .clamp(img_rect.left() + 2.0, img_rect.right() - 2.0);
+                        let min_x = img_rect.left() + 2.0;
+                        let max_x = (img_rect.right() - 2.0).max(min_x);
+                        let split_x = (img_rect.left() + img_rect.width() * self.split_pos).clamp(min_x, max_x);
 
                         // Moitié gauche : SDR Original (AVANT)
                         let left_clip = Rect::from_min_max(img_rect.min, Pos2::new(split_x, img_rect.max.y));
@@ -2771,7 +3032,9 @@ impl UltraHdrApp {
                         painter.line_segment([Pos2::new(split_x, img_rect.top()), Pos2::new(split_x, img_rect.bottom())], Stroke::new(2.0f32, Color32::WHITE));
 
                         // Poignée circulaire élégante avec flèches (au moins 2px d'espace avec les bords)
-                        let handle_x = split_x.clamp(img_rect.left() + 16.0, img_rect.right() - 16.0);
+                        let min_hx = img_rect.left() + 16.0;
+                        let max_hx = (img_rect.right() - 16.0).max(min_hx);
+                        let handle_x = split_x.clamp(min_hx, max_hx);
                         let handle_pos = Pos2::new(handle_x, img_rect.center().y);
                         painter.circle_filled(handle_pos, 14.0, Color32::from_rgb(0, 120, 212));
                         painter.circle_stroke(handle_pos, 14.0, Stroke::new(2.5f32, Color32::WHITE));

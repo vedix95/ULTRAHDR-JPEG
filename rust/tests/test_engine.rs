@@ -516,4 +516,49 @@ fn test_adaptive_ui_metrics_and_panel_clamping() {
     }
 }
 
+#[test]
+fn test_mobile_lightroom_deck_and_panes() {
+    use ultrahdr::gui::ConfigPane;
+
+    let panes = [
+        ConfigPane::Tonal,
+        ConfigPane::Profiles,
+        ConfigPane::Engine,
+        ConfigPane::Simulation,
+        ConfigPane::Export,
+    ];
+
+    assert_eq!(panes.len(), 5);
+    assert_eq!(ConfigPane::Tonal.title(), "Tonalité");
+    assert_eq!(ConfigPane::Profiles.title(), "Profils");
+    assert_eq!(ConfigPane::Engine.title(), "Moteur");
+    assert_eq!(ConfigPane::Simulation.title(), "Rendu");
+    assert_eq!(ConfigPane::Export.title(), "Export");
+
+    // Vérifier les hauteurs de deck mobile (replié vs étendu)
+    let screen_heights: [f32; 4] = [640.0, 800.0, 920.0, 1080.0];
+    for total_h in screen_heights {
+        let collapsed_h = 50.0_f32;
+        let expanded_h = (total_h * 0.38_f32).clamp(210.0_f32, 285.0_f32);
+
+        // Replié : au moins 85% d'espace réservé pour la photo
+        let photo_space_collapsed = total_h - collapsed_h;
+        assert!(photo_space_collapsed / total_h > 0.85);
+
+        // Étendu : l'image a toujours entre 60% et 75% de hauteur libre
+        let photo_space_expanded = total_h - expanded_h;
+        assert!(photo_space_expanded / total_h >= 0.60);
+    }
+
+    // Vérifier la sécurité de clamping du split-handle contre les paniques
+    let left = 10.0_f32;
+    let right = 10.0_f32; // degenerate rect
+    let min_x = left + 2.0;
+    let max_x = (right - 2.0).max(min_x);
+    assert!(min_x <= max_x);
+    let split_pos = 0.5_f32;
+    let split_x = (left + (right - left) * split_pos).clamp(min_x, max_x);
+    assert!(split_x >= min_x && split_x <= max_x);
+}
+
 

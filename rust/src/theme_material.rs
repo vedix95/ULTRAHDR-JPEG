@@ -520,7 +520,7 @@ pub fn material_tab(ui: &mut Ui, theme: &DynamicM3Theme, selected: bool, icon: &
 
     let rounding = Rounding::same(10.0_f32);
     let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(width.max(48.0_f32), 32.0_f32),
+        Vec2::new(width.max(34.0_f32), 32.0_f32),
         egui::Sense::click(),
     );
 
@@ -907,7 +907,7 @@ pub fn m3_icon_segmented_button<T: PartialEq + Copy>(
 
     let avail = ui.available_width();
     let max_w = metrics.segmented_item_w;
-    let item_w = ((avail - 4.0) / n as f32).min(max_w).max(34.0_f32);
+    let item_w = ((avail - 4.0) / n as f32).min(max_w).max(28.0_f32);
     let item_h = metrics.segmented_item_h;
 
     ui.horizontal(|ui| {

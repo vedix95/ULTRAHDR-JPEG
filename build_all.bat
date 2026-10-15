@@ -42,4 +42,4 @@ echo   - Windows : dist\windows\ultrahdr.exe
 echo   - Linux   : dist\linux\ultrahdr
 echo   - Android : dist\android\ultrahdr.apk
 echo ============================================================
-pause
+if "%~1"=="" pause
