@@ -191,6 +191,31 @@ pub struct ExportSuccessInfo {
     pub height: u32,
 }
 
+#[cfg(target_os = "android")]
+pub static ANDROID_APP_VM: std::sync::atomic::AtomicPtr<std::ffi::c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+#[cfg(target_os = "android")]
+pub static ANDROID_APP_ACTIVITY: std::sync::atomic::AtomicPtr<std::ffi::c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+#[cfg(target_os = "android")]
+pub fn get_android_context_ptrs() -> (*mut std::ffi::c_void, *mut std::ffi::c_void) {
+    let vm = ANDROID_APP_VM.load(std::sync::atomic::Ordering::SeqCst);
+    let act = ANDROID_APP_ACTIVITY.load(std::sync::atomic::Ordering::SeqCst);
+    if !vm.is_null() && !act.is_null() {
+        return (vm, act);
+    }
+    let res = std::panic::catch_unwind(|| {
+        let ctx = ndk_context::android_context();
+        (ctx.vm(), ctx.context())
+    });
+    res.unwrap_or((std::ptr::null_mut(), std::ptr::null_mut()))
+}
+
+#[cfg(not(target_os = "android"))]
+#[allow(dead_code)]
+pub fn get_android_context_ptrs() -> (*mut std::ffi::c_void, *mut std::ffi::c_void) {
+    (std::ptr::null_mut(), std::ptr::null_mut())
+}
+
 impl UltraHdrApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // Détection de l'écran HDR (Windows DXGI ou Linux Wayland)
@@ -409,9 +434,7 @@ impl UltraHdrApp {
 
 #[cfg(target_os = "android")]
 pub fn trigger_android_photo_picker() {
-    let ctx = ndk_context::android_context();
-    let vm_ptr = ctx.vm();
-    let activity_ptr = ctx.context();
+    let (vm_ptr, activity_ptr) = get_android_context_ptrs();
     if vm_ptr.is_null() || activity_ptr.is_null() {
         return;
     }
@@ -420,9 +443,7 @@ pub fn trigger_android_photo_picker() {
             if let Ok(mut env) = vm.attach_current_thread() {
                 let activity_obj = jni::objects::JObject::from_raw(activity_ptr as *mut _);
                 if !activity_obj.as_raw().is_null() {
-                    if let Ok(_class) = env.get_object_class(&activity_obj) {
-                        let _ = env.call_method(&activity_obj, "openPicker", "()V", &[]);
-                    }
+                    let _ = env.call_method(&activity_obj, "openPicker", "()V", &[]);
                 }
                 // Nettoyage immédiat de toute exception JNI pour empêcher l'arrêt de l'application
                 if env.exception_check().unwrap_or(false) {
@@ -435,22 +456,24 @@ pub fn trigger_android_photo_picker() {
 
 #[cfg(target_os = "android")]
 pub fn poll_android_imported_photo() -> Option<String> {
-    let ctx = ndk_context::android_context();
-    let vm_ptr = ctx.vm();
-    if vm_ptr.is_null() {
+    let (vm_ptr, activity_ptr) = get_android_context_ptrs();
+    if vm_ptr.is_null() || activity_ptr.is_null() {
         return None;
     }
     unsafe {
         if let Ok(vm) = jni::JavaVM::from_raw(vm_ptr as *mut _) {
             if let Ok(mut env) = vm.attach_current_thread() {
-                if let Ok(class) = env.find_class("com/ultrahdr/studio/MainActivity") {
-                    if let Ok(res) = env.call_static_method(&class, "pollImportedPhoto", "()Ljava/lang/String;", &[]) {
-                        if let Ok(obj) = res.l() {
-                            if !obj.as_raw().is_null() {
-                                let jstr = jni::objects::JString::from(obj);
-                                let out_str = env.get_string(&jstr).ok().map(|s| s.to_string_lossy().to_string());
-                                if out_str.is_some() {
-                                    return out_str;
+                let activity_obj = jni::objects::JObject::from_raw(activity_ptr as *mut _);
+                if !activity_obj.as_raw().is_null() {
+                    if let Ok(class) = env.get_object_class(&activity_obj) {
+                        if let Ok(res) = env.call_static_method(&class, "pollImportedPhoto", "()Ljava/lang/String;", &[]) {
+                            if let Ok(obj) = res.l() {
+                                if !obj.as_raw().is_null() {
+                                    let jstr = jni::objects::JString::from(obj);
+                                    let out_str = env.get_string(&jstr).ok().map(|s| s.to_string_lossy().to_string());
+                                    if out_str.is_some() {
+                                        return out_str;
+                                    }
                                 }
                             }
                         }
@@ -467,18 +490,20 @@ pub fn poll_android_imported_photo() -> Option<String> {
 
 #[cfg(target_os = "android")]
 pub fn is_android_photo_importing() -> bool {
-    let ctx = ndk_context::android_context();
-    let vm_ptr = ctx.vm();
-    if vm_ptr.is_null() {
+    let (vm_ptr, activity_ptr) = get_android_context_ptrs();
+    if vm_ptr.is_null() || activity_ptr.is_null() {
         return false;
     }
     unsafe {
         if let Ok(vm) = jni::JavaVM::from_raw(vm_ptr as *mut _) {
             if let Ok(mut env) = vm.attach_current_thread() {
-                if let Ok(class) = env.find_class("com/ultrahdr/studio/MainActivity") {
-                    if let Ok(res) = env.call_static_method(&class, "isPhotoImporting", "()Z", &[]) {
-                        if let Ok(b) = res.z() {
-                            return b;
+                let activity_obj = jni::objects::JObject::from_raw(activity_ptr as *mut _);
+                if !activity_obj.as_raw().is_null() {
+                    if let Ok(class) = env.get_object_class(&activity_obj) {
+                        if let Ok(res) = env.call_static_method(&class, "isPhotoImporting", "()Z", &[]) {
+                            if let Ok(b) = res.z() {
+                                return b;
+                            }
                         }
                     }
                 }
@@ -494,9 +519,7 @@ pub fn is_android_photo_importing() -> bool {
 #[cfg(target_os = "android")]
 pub fn trigger_android_save_export(bytes: &[u8], filename: &str) -> Option<String> {
     log::info!("trigger_android_save_export: Début sauvegarde {} ({} octets)", filename, bytes.len());
-    let ctx = ndk_context::android_context();
-    let vm_ptr = ctx.vm();
-    let activity_ptr = ctx.context();
+    let (vm_ptr, activity_ptr) = get_android_context_ptrs();
     if vm_ptr.is_null() || activity_ptr.is_null() {
         log::error!("trigger_android_save_export: vm_ptr ou activity_ptr est NULL !");
         return None;
@@ -567,27 +590,27 @@ pub fn trigger_android_save_export(bytes: &[u8], filename: &str) -> Option<Strin
                     }
                 }
             }
-        }
 
-        // 2. Repli : Appel via méthode statique MainActivity.saveExport
-        if let Ok(class) = env.find_class("com/ultrahdr/studio/MainActivity") {
-            let res_static = env.call_static_method(
-                &class,
-                "saveExport",
-                sig,
-                &[jni::objects::JValue::Object(j_bytes.as_ref()), jni::objects::JValue::Object(j_filename.as_ref())],
-            );
-            if let Ok(val) = res_static {
-                if let Ok(obj) = val.l() {
-                    if !obj.as_raw().is_null() {
-                        let jstr = jni::objects::JString::from(obj);
-                        let out_str = env.get_string(&jstr).ok().map(|s| s.to_string_lossy().to_string());
-                        if env.exception_check().unwrap_or(false) {
-                            let _ = env.exception_clear();
-                        }
-                        if let Some(out) = out_str {
-                            log::info!("trigger_android_save_export: Succès méthode statique -> {}", out);
-                            return Some(out);
+            // 2. Repli : Appel via méthode statique MainActivity.saveExport
+            if let Ok(class) = env.get_object_class(&activity_obj) {
+                let res_static = env.call_static_method(
+                    &class,
+                    "saveExport",
+                    sig,
+                    &[jni::objects::JValue::Object(j_bytes.as_ref()), jni::objects::JValue::Object(j_filename.as_ref())],
+                );
+                if let Ok(val) = res_static {
+                    if let Ok(obj) = val.l() {
+                        if !obj.as_raw().is_null() {
+                            let jstr = jni::objects::JString::from(obj);
+                            let out_str = env.get_string(&jstr).ok().map(|s| s.to_string_lossy().to_string());
+                            if env.exception_check().unwrap_or(false) {
+                                let _ = env.exception_clear();
+                            }
+                            if let Some(out) = out_str {
+                                log::info!("trigger_android_save_export: Succès méthode statique -> {}", out);
+                                return Some(out);
+                            }
                         }
                     }
                 }
@@ -604,9 +627,7 @@ pub fn trigger_android_save_export(bytes: &[u8], filename: &str) -> Option<Strin
 
 #[cfg(target_os = "android")]
 pub fn trigger_android_media_scan(path: &str) {
-    let ctx = ndk_context::android_context();
-    let vm_ptr = ctx.vm();
-    let activity_ptr = ctx.context();
+    let (vm_ptr, activity_ptr) = get_android_context_ptrs();
     if vm_ptr.is_null() || activity_ptr.is_null() {
         return;
     }
@@ -634,9 +655,7 @@ pub fn trigger_android_media_scan(path: &str) {
 
 #[cfg(target_os = "android")]
 pub fn trigger_android_view_image() {
-    let ctx = ndk_context::android_context();
-    let vm_ptr = ctx.vm();
-    let activity_ptr = ctx.context();
+    let (vm_ptr, activity_ptr) = get_android_context_ptrs();
     if vm_ptr.is_null() || activity_ptr.is_null() {
         return;
     }
@@ -657,9 +676,7 @@ pub fn trigger_android_view_image() {
 
 #[cfg(target_os = "android")]
 pub fn trigger_android_view_folder() {
-    let ctx = ndk_context::android_context();
-    let vm_ptr = ctx.vm();
-    let activity_ptr = ctx.context();
+    let (vm_ptr, activity_ptr) = get_android_context_ptrs();
     if vm_ptr.is_null() || activity_ptr.is_null() {
         return;
     }
@@ -3894,20 +3911,32 @@ pub fn android_main(app: android_activity::AndroidApp) {
         android_logger::Config::default().with_max_level(log::LevelFilter::Info),
     );
 
+    let vm_ptr = app.vm_as_ptr();
+    let act_ptr = app.activity_as_ptr();
+    ANDROID_APP_VM.store(vm_ptr, std::sync::atomic::Ordering::SeqCst);
+    ANDROID_APP_ACTIVITY.store(act_ptr, std::sync::atomic::Ordering::SeqCst);
+
+    unsafe {
+        let _ = std::panic::catch_unwind(|| {
+            ndk_context::initialize_android_context(vm_ptr, act_ptr);
+        });
+    }
+
     let mut native_options = eframe::NativeOptions::default();
     native_options.event_loop_builder = Some(Box::new(move |builder| {
         builder.with_android_app(app);
     }));
 
-    let _ = eframe::run_native(
+    let res = eframe::run_native(
         "UltraHDR Studio",
         native_options,
         Box::new(|cc| {
-            let mut app = UltraHdrApp::new(cc);
-            // Charge automatiquement la scène de test Ultra HDR au démarrage sur Android
-            app.load_demo_image(&cc.egui_ctx);
+            let app = UltraHdrApp::new(cc);
             Box::new(app)
         }),
     );
+    if let Err(e) = res {
+        log::error!("eframe::run_native a échoué sur Android: {:?}", e);
+    }
 }
 

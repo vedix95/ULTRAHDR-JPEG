@@ -26,8 +26,7 @@
         android:label="UltraHDR Studio"
         android:icon="@mipmap/ic_launcher"
         android:hasCode="true"
-        android:hardwareAccelerated="true"
-        android:extractNativeLibs="true">
+        android:hardwareAccelerated="true">
 
         <activity
             android:name="com.ultrahdr.studio.MainActivity"

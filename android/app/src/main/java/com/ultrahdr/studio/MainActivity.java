@@ -25,6 +25,15 @@ public class MainActivity extends NativeActivity {
     private static String lastExportedPath = null;
     private static Uri lastExportedUri = null;
 
+    static {
+        try {
+            System.loadLibrary("ultrahdr");
+            Log.i(TAG, "libultrahdr.so chargé avec succès via static initializer.");
+        } catch (Throwable t) {
+            Log.e(TAG, "Impossible de charger libultrahdr.so dans MainActivity: " + t.getMessage(), t);
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);

@@ -165,13 +165,13 @@ impl DynamicM3Theme {
         #[cfg(target_os = "android")]
         {
             let mut theme = Self::default();
-            let ctx = ndk_context::android_context();
-            let vm_ptr = ctx.vm();
-            if !vm_ptr.is_null() {
+            let (vm_ptr, act_ptr) = crate::gui::get_android_context_ptrs();
+            if !vm_ptr.is_null() && !act_ptr.is_null() {
                 unsafe {
                     if let Ok(vm) = jni::JavaVM::from_raw(vm_ptr as *mut _) {
                         if let Ok(mut env) = vm.attach_current_thread() {
-                            if let Ok(class) = env.find_class("com/ultrahdr/studio/MainActivity") {
+                            let act_obj = jni::objects::JObject::from_raw(act_ptr as *mut _);
+                            if let Ok(class) = env.get_object_class(&act_obj) {
                                 if let Ok(res) = env.call_static_method(&class, "getDynamicColors", "()[I", &[]) {
                                     if let Ok(obj) = res.l() {
                                         if !obj.as_raw().is_null() {
@@ -191,6 +191,9 @@ impl DynamicM3Theme {
                                         }
                                     }
                                 }
+                            }
+                            if env.exception_check().unwrap_or(false) {
+                                let _ = env.exception_clear();
                             }
                         }
                     }

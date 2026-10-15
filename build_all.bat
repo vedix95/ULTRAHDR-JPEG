@@ -22,12 +22,12 @@ if %ERRORLEVEL% neq 0 (
     exit /b %ERRORLEVEL%
 )
 
-echo [*] Copie des binaires vers ..\dist...
+echo [*] Copie des binaires vers le dossier dist
 if not exist "..\dist\windows" mkdir "..\dist\windows"
 if not exist "..\dist\linux" mkdir "..\dist\linux"
 
-copy /y "target\release\ultrahdr.exe" "..\dist\windows\ultrahdr.exe" >nul
-copy /y "target\x86_64-unknown-linux-musl\release\ultrahdr" "..\dist\linux\ultrahdr" >nul
+copy /y "%~dp0rust\target\release\ultrahdr.exe" "%~dp0dist\windows\ultrahdr.exe" >nul
+copy /y "%~dp0rust\target\x86_64-unknown-linux-musl\release\ultrahdr" "%~dp0dist\linux\ultrahdr" >nul
 
 cd /d "%~dp0"
 if exist "build_android.bat" (
