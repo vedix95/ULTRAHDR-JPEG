@@ -1,10 +1,10 @@
 # ✨ UltraHDR Studio — Moteur & Studio Photo Ultra HDR en Rust Pur
 
 [![CI / CD Build & Multiplatform Release](https://github.com/vedix95/ULTRAHDR-JPEG/actions/workflows/build.yml/badge.svg)](https://github.com/vedix95/ULTRAHDR-JPEG/actions/workflows/build.yml)
-[![GitHub Release](https://img.shields.io/github/v/release/vedix95/ULTRAHDR-JPEG?color=blue&label=Release%20v1.1.0)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.1.0)
+[![GitHub Release](https://img.shields.io/github/v/release/vedix95/ULTRAHDR-JPEG?color=blue&label=Release%20v1.1.1)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.1.1)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20Android-blue.svg)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.1.0)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20Android-blue.svg)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.1.1)
 
 > **Éditeur et générateur photographique Ultra HDR professionnel en Rust pur**, 100% conforme aux standards internationaux **ISO 21496-1** et **Google Ultra HDR (v1.1)**.
 > Développé avec une **architecture 100% native** (zéro dépendance Python, zéro Electron, zéro WebView, rendu direct matériel GPU via `wgpu` / DirectX 12 / Vulkan / Wayland / Android NDK) et un moteur **CLI multithreadé ultra-rapide (Rayon)**.
@@ -112,12 +112,12 @@ flowchart LR
 
 Les livrables autonomes multiplateformes (sans dépendance externe requise) sont disponibles dans le répertoire [`dist/`](dist/) et dans les **Releases GitHub** :
 
-👉 **[Télécharger la version officielle (Releases)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.1.0)**
+👉 **[Télécharger la version officielle (Releases)](https://github.com/vedix95/ULTRAHDR-JPEG/releases/tag/v1.1.1)**
 
 ### Packages Disponibles :
-- **Android ARM64 (APK)** : [`ultrahdr.apk`](https://github.com/vedix95/ULTRAHDR-JPEG/releases/download/v1.1.0/ultrahdr.apk)
-- **Windows 64-bit** : [`ultrahdr-windows-x64.zip`](https://github.com/vedix95/ULTRAHDR-JPEG/releases/download/v1.1.0/ultrahdr-windows-x64.zip)
-- **Linux 64-bit** : [`ultrahdr-linux-x64.tar.gz`](https://github.com/vedix95/ULTRAHDR-JPEG/releases/download/v1.1.0/ultrahdr-linux-x64.tar.gz)
+- **Android ARM64 (APK)** : [`ultrahdr.apk`](https://github.com/vedix95/ULTRAHDR-JPEG/releases/download/v1.1.1/ultrahdr.apk)
+- **Windows 64-bit** : [`ultrahdr-windows-x64.zip`](https://github.com/vedix95/ULTRAHDR-JPEG/releases/download/v1.1.1/ultrahdr-windows-x64.zip)
+- **Linux 64-bit** : [`ultrahdr-linux-x64.tar.gz`](https://github.com/vedix95/ULTRAHDR-JPEG/releases/download/v1.1.1/ultrahdr-linux-x64.tar.gz)
 
 ### Lancement Rapide :
 - **Sous Linux** :

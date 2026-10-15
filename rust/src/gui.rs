@@ -325,6 +325,7 @@ impl UltraHdrApp {
         self.loaded_image = Some(img);
         self.zoom = 1.0;
         self.pan = Vec2::ZERO;
+        self.split_pos = 0.5;
 
         // Calcul initial des textures de prévisualisation
         self.recompute_and_update_textures(ctx);
@@ -1111,23 +1112,27 @@ impl eframe::App for UltraHdrApp {
 
         // ── 1. Barre Supérieure (Header Responsive Material Design 3) ──
         egui::TopBottomPanel::top("top_panel")
-            .frame(egui::Frame::none().fill(self.m3_theme.surface_0).inner_margin(egui::Margin::symmetric(if is_vertical { 8.0 } else { 14.0 }, 6.0)))
+            .frame(egui::Frame::none().fill(self.m3_theme.surface_0).inner_margin(egui::Margin::symmetric(if is_vertical { 4.0 } else { 14.0 }, 4.0)))
             .show(ctx, |ui| {
                 if is_vertical {
                     // En-tête compact optimisé mobile / écran vertical : composants Material 3
                     ui.horizontal(|ui| {
+                        ui.add_space(2.0);
                         ui.label(egui::RichText::new("✨ UltraHDR").size(15.0).strong().color(self.m3_theme.primary));
 
                         if let Some(img) = &self.loaded_image {
-                            let display_name = if img.filename.len() > 10 {
-                                format!("{}...", &img.filename[..8])
-                            } else {
-                                img.filename.clone()
-                            };
-                            crate::theme_material::m3_value_pill(ui, &self.m3_theme, &display_name);
+                            if ui.available_width() > 160.0 {
+                                let display_name = if img.filename.len() > 10 {
+                                    format!("{}...", &img.filename[..8])
+                                } else {
+                                    img.filename.clone()
+                                };
+                                crate::theme_material::m3_value_pill(ui, &self.m3_theme, &display_name);
+                            }
                         }
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(2.0);
                             let export_enabled = self.loaded_image.is_some();
                             if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "💾", "Exporter JPEG Ultra HDR").clicked() {
                                 if export_enabled {
@@ -1140,8 +1145,10 @@ impl eframe::App for UltraHdrApp {
                                 self.trigger_pick_file(ctx);
                             }
 
-                            if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "⚡", "Traitement par lot...").clicked() {
-                                self.show_batch_dialog = true;
+                            if ui.available_width() > 50.0 {
+                                if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "⚡", "Traitement par lot...").clicked() {
+                                    self.show_batch_dialog = true;
+                                }
                             }
                         });
                     });
@@ -1706,7 +1713,7 @@ impl eframe::App for UltraHdrApp {
                 .resizable(true)
                 .default_height(deck_h)
                 .height_range(180.0..=550.0)
-                .frame(egui::Frame::none().fill(Color32::from_rgb(16, 18, 26)).inner_margin(egui::Margin::symmetric(8.0, 6.0)))
+                .frame(egui::Frame::none().fill(Color32::from_rgb(16, 18, 26)).inner_margin(egui::Margin::symmetric(4.0, 4.0)))
                 .show(ctx, |ui| {
                     self.ui_vertical_control_deck(ui, ctx);
                 });
@@ -1726,7 +1733,7 @@ impl eframe::App for UltraHdrApp {
 
         // ── 6. Panneau Central (Visionneuse d'Image Haute Performance) ──
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(Color32::from_rgb(12, 13, 18)))
+            .frame(egui::Frame::none().fill(Color32::from_rgb(12, 13, 18)).inner_margin(egui::Margin::symmetric(2.0, 2.0)))
             .show(ctx, |ui| {
                 self.ui_center_viewport(ui, ctx, is_vertical);
             });
@@ -2398,14 +2405,16 @@ impl UltraHdrApp {
             // Disposition Smartphone Portrait Étroite (16:9, 18:9, 19.5:9, 20:9, 21:9) :
             // 4 Onglets Material 3 en 1 SEULE ligne horizontale parfaitement répartie
             ui.vertical(|ui| {
-                let tab_w = ((avail_w - 3.0 * 6.0) / 4.0).max(45.0);
+                let tab_w = ((avail_w - 4.0 - 3.0 * 4.0) / 4.0).max(42.0);
                 ui.horizontal(|ui| {
+                    ui.add_space(2.0);
                     for pane in panes {
                         let is_active = self.active_config_pane == pane;
                         if crate::theme_material::material_tab(ui, &self.m3_theme, is_active, pane.icon(), pane.title(), tab_w).clicked() {
                             self.active_config_pane = pane;
                         }
                     }
+                    ui.add_space(2.0);
                 });
 
                 ui.add_space(4.0);
@@ -2422,6 +2431,8 @@ impl UltraHdrApp {
                                 ConfigPane::Engine => self.ui_panel_engine_content(ui, ctx, true),
                                 ConfigPane::Export => self.ui_panel_export_content(ui, ctx, true),
                             }
+                            #[cfg(target_os = "android")]
+                            ui.add_space(28.0);
                         });
                     });
             });
@@ -2474,7 +2485,7 @@ impl UltraHdrApp {
         // Barre d'outils de la visionneuse
         egui::Frame::none()
             .fill(Color32::from_rgb(18, 19, 26))
-            .inner_margin(egui::Margin::symmetric(if is_vertical { 8.0 } else { 12.0 }, 6.0))
+            .inner_margin(egui::Margin::symmetric(if is_vertical { 4.0 } else { 10.0 }, 4.0))
             .show(ui, |ui| {
                 let mut mode_changed = false;
                 let mode_options = [
@@ -2492,62 +2503,125 @@ impl UltraHdrApp {
                             || i.key_down(egui::Key::Slash)
                     });
 
-                // Barre d'outils responsive avec bloc de zoom fixe ancré à droite (ne s'écrase JAMAIS)
-                ui.horizontal(|ui| {
-                    // 1. BLOC DE ZOOM FIXE (Prioritaire, ancré à droite)
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "➕", "Zoomer").clicked() {
-                            self.zoom = (self.zoom * 1.25).clamp(0.2, 8.0);
+                let avail_w = ui.available_width();
+                if is_vertical || avail_w < 520.0 {
+                    // Disposition 2 lignes nette et aérée : aucune superposition possible sur mobile ou écran étroit
+                    // Ligne 1 : Modes de visionnage + Bouton Comparer
+                    ui.horizontal(|ui| {
+                        ui.add_space(2.0);
+                        let comp_w = 42.0;
+                        let sep_w = 16.0;
+                        let modes_w = (ui.available_width() - comp_w - sep_w - 6.0).max(160.0);
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(modes_w, 36.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                if crate::theme_material::m3_icon_segmented_button(ui, &self.m3_theme, &mode_options, &mut self.mode) {
+                                    mode_changed = true;
+                                }
+                            },
+                        );
+
+                        ui.add_space(3.0);
+                        ui.separator();
+                        ui.add_space(3.0);
+
+                        let compare_tooltip = if is_vertical { "Comparer avec l'Original [Espace]" } else { "Comparer avec l'Original [Espace / \\]" };
+                        let (comp_bg, comp_fg, comp_stroke) = if is_compare_active {
+                            (self.m3_theme.primary_container, self.m3_theme.on_primary_container, Stroke::new(1.2_f32, self.m3_theme.primary))
+                        } else {
+                            (self.m3_theme.surface_container, self.m3_theme.on_surface_variant, Stroke::new(1.0_f32, self.m3_theme.outline_variant))
+                        };
+                        let comp_btn = egui::Button::new(egui::RichText::new("👁").size(16.5).color(comp_fg))
+                            .fill(comp_bg)
+                            .stroke(comp_stroke)
+                            .rounding(Rounding::same(18.0))
+                            .min_size(Vec2::new(38.0, 34.0));
+                        if ui.add(comp_btn).on_hover_text(compare_tooltip).clicked() {
+                            self.compare_toggled = !self.compare_toggled;
+                        }
+                        ui.add_space(2.0);
+                    });
+
+                    ui.add_space(3.0);
+
+                    // Ligne 2 : Commandes de zoom centrées et parfaitement proportionnées
+                    ui.horizontal_centered(|ui| {
+                        let fit_btn = egui::Button::new(egui::RichText::new("⛶").size(15.0).color(self.m3_theme.on_surface))
+                            .fill(self.m3_theme.surface_container)
+                            .stroke(Stroke::new(1.0_f32, self.m3_theme.outline_variant))
+                            .rounding(Rounding::same(16.0))
+                            .min_size(Vec2::new(36.0, 30.0));
+                        if ui.add(fit_btn).on_hover_text("Taille réelle 1:1").clicked() {
+                            self.zoom = 1.0;
+                            self.pan = Vec2::ZERO;
                         }
 
-                        crate::theme_material::m3_value_pill(ui, &self.m3_theme, &format!("{:.0}%", self.zoom * 100.0));
+                        ui.add_space(4.0);
 
                         if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "➖", "Dézoomer").clicked() {
                             self.zoom = (self.zoom / 1.25).clamp(0.2, 8.0);
                         }
 
-                        let fit_btn = egui::Button::new(egui::RichText::new("⛶").size(16.0).color(self.m3_theme.on_surface))
-                            .fill(self.m3_theme.surface_container)
-                            .stroke(Stroke::new(1.0_f32, self.m3_theme.outline_variant))
-                            .rounding(Rounding::same(18.0))
-                            .min_size(Vec2::new(40.0, 36.0));
-                        if ui.add(fit_btn).on_hover_text("Taille réelle 1:1").clicked() {
-                            self.zoom = 1.0;
-                            self.pan = Vec2::ZERO;
+                        crate::theme_material::m3_value_pill(ui, &self.m3_theme, &format!("{:.0}%", self.zoom * 100.0));
+
+                        if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "➕", "Zoomer").clicked() {
+                            self.zoom = (self.zoom * 1.25).clamp(0.2, 8.0);
+                        }
+                    });
+                } else {
+                    // Disposition standard bureau sur 1 seule ligne, avec séparation nette sans superposition
+                    ui.horizontal(|ui| {
+                        ui.add_space(2.0);
+                        // 1. Gauche : Modes
+                        if crate::theme_material::m3_icon_segmented_button(ui, &self.m3_theme, &mode_options, &mut self.mode) {
+                            mode_changed = true;
                         }
 
                         ui.add_space(6.0);
                         ui.separator();
                         ui.add_space(6.0);
 
-                        // 2. MODES DE RENDU & COMPARAISON (Flux gauche restant)
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            if crate::theme_material::m3_icon_segmented_button(ui, &self.m3_theme, &mode_options, &mut self.mode) {
-                                mode_changed = true;
+                        // Comparer
+                        let (comp_bg, comp_fg, comp_stroke) = if is_compare_active {
+                            (self.m3_theme.primary_container, self.m3_theme.on_primary_container, Stroke::new(1.2_f32, self.m3_theme.primary))
+                        } else {
+                            (self.m3_theme.surface_container, self.m3_theme.on_surface_variant, Stroke::new(1.0_f32, self.m3_theme.outline_variant))
+                        };
+                        let comp_btn = egui::Button::new(egui::RichText::new("👁").size(16.5).color(comp_fg))
+                            .fill(comp_bg)
+                            .stroke(comp_stroke)
+                            .rounding(Rounding::same(18.0))
+                            .min_size(Vec2::new(42.0, 36.0));
+                        if ui.add(comp_btn).on_hover_text("Comparer avec l'Original [Espace / \\]").clicked() {
+                            self.compare_toggled = !self.compare_toggled;
+                        }
+
+                        // 2. Droite : Commandes Zoom (dans l'espace disponible restant, ancré à droite)
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(2.0);
+                            if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "➕", "Zoomer").clicked() {
+                                self.zoom = (self.zoom * 1.25).clamp(0.2, 8.0);
                             }
 
-                            ui.add_space(6.0);
-                            ui.separator();
-                            ui.add_space(6.0);
+                            crate::theme_material::m3_value_pill(ui, &self.m3_theme, &format!("{:.0}%", self.zoom * 100.0));
 
-                            // Bouton Comparer Original [Espace] (Icône M3)
-                            let compare_tooltip = if is_vertical { "Comparer avec l'Original [Espace]" } else { "Comparer avec l'Original [Espace / \\]" };
-                            let (comp_bg, comp_fg, comp_stroke) = if is_compare_active {
-                                (self.m3_theme.primary_container, self.m3_theme.on_primary_container, Stroke::new(1.2_f32, self.m3_theme.primary))
-                            } else {
-                                (self.m3_theme.surface_container, self.m3_theme.on_surface_variant, Stroke::new(1.0_f32, self.m3_theme.outline_variant))
-                            };
-                            let comp_btn = egui::Button::new(egui::RichText::new("👁").size(16.5).color(comp_fg))
-                                .fill(comp_bg)
-                                .stroke(comp_stroke)
+                            if crate::theme_material::m3_icon_button(ui, &self.m3_theme, "➖", "Dézoomer").clicked() {
+                                self.zoom = (self.zoom / 1.25).clamp(0.2, 8.0);
+                            }
+
+                            let fit_btn = egui::Button::new(egui::RichText::new("⛶").size(16.0).color(self.m3_theme.on_surface))
+                                .fill(self.m3_theme.surface_container)
+                                .stroke(Stroke::new(1.0_f32, self.m3_theme.outline_variant))
                                 .rounding(Rounding::same(18.0))
-                                .min_size(Vec2::new(42.0, 36.0));
-                            if ui.add(comp_btn).on_hover_text(compare_tooltip).clicked() {
-                                self.compare_toggled = !self.compare_toggled;
+                                .min_size(Vec2::new(40.0, 36.0));
+                            if ui.add(fit_btn).on_hover_text("Taille réelle 1:1").clicked() {
+                                self.zoom = 1.0;
+                                self.pan = Vec2::ZERO;
                             }
                         });
                     });
-                });
+                }
 
                 if mode_changed {
                     self.recompute_and_update_textures(ctx);
@@ -2555,50 +2629,54 @@ impl UltraHdrApp {
             });
 
         if self.loaded_image.is_none() {
-            // Zone de dépôt vide élégante
-            ui.centered_and_justified(|ui| {
-                egui::Frame::none()
-                    .fill(Color32::from_rgb(20, 22, 30))
-                    .stroke(Stroke::new(1.5f32, Color32::from_rgb(50, 56, 78)))
-                    .rounding(Rounding::same(12.0))
-                    .inner_margin(egui::Margin::symmetric(40.0, 36.0))
-                    .show(ui, |ui| {
-                        ui.vertical_centered(|ui| {
-                            ui.label(egui::RichText::new("📷").size(48.0));
-                            ui.add_space(8.0);
-                            ui.heading(egui::RichText::new("Glissez-déposez n'importe quelle photo ici").size(20.0).color(Color32::WHITE));
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(
-                                    "Prend en charge tous les formats : Camera RAW, OpenEXR (.exr), Radiance HDR (.hdr), Apple HEIC, TIFF 16-bit, JPEG, PNG, WebP",
-                                )
-                                .size(13.0)
-                                .color(Color32::from_rgb(160, 165, 185)),
-                            );
-                            ui.add_space(16.0);
-                            let btn_browse = egui::Button::new(
-                                egui::RichText::new("Sélectionner une photo...").strong().size(14.0).color(Color32::WHITE),
-                            )
-                            .fill(Color32::from_rgb(0, 120, 212))
-                            .rounding(Rounding::same(24.0));
+            // Zone de dépôt vide élégante avec marge minimale pour ne pas toucher les bords
+            egui::Frame::none()
+                .inner_margin(egui::Margin::symmetric(if is_vertical { 4.0 } else { 16.0 }, 4.0))
+                .show(ui, |ui| {
+                    ui.centered_and_justified(|ui| {
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(20, 22, 30))
+                            .stroke(Stroke::new(1.5f32, Color32::from_rgb(50, 56, 78)))
+                            .rounding(Rounding::same(12.0))
+                            .inner_margin(egui::Margin::symmetric(if is_vertical { 16.0 } else { 40.0 }, if is_vertical { 20.0 } else { 36.0 }))
+                            .show(ui, |ui| {
+                                ui.vertical_centered(|ui| {
+                                    ui.label(egui::RichText::new("📷").size(48.0));
+                                    ui.add_space(8.0);
+                                    ui.heading(egui::RichText::new("Glissez-déposez n'importe quelle photo ici").size(20.0).color(Color32::WHITE));
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Prend en charge tous les formats : Camera RAW, OpenEXR (.exr), Radiance HDR (.hdr), Apple HEIC, TIFF 16-bit, JPEG, PNG, WebP",
+                                        )
+                                        .size(13.0)
+                                        .color(Color32::from_rgb(160, 165, 185)),
+                                    );
+                                    ui.add_space(16.0);
+                                    let btn_browse = egui::Button::new(
+                                        egui::RichText::new("Sélectionner une photo...").strong().size(14.0).color(Color32::WHITE),
+                                    )
+                                    .fill(Color32::from_rgb(0, 120, 212))
+                                    .rounding(Rounding::same(24.0));
 
-                            if ui.add_sized([220.0, 42.0], btn_browse).clicked() {
-                                self.trigger_pick_file(ctx);
-                            }
+                                    if ui.add_sized([220.0, 42.0], btn_browse).clicked() {
+                                        self.trigger_pick_file(ctx);
+                                    }
 
-                            ui.add_space(8.0);
-                            let btn_demo = egui::Button::new(
-                                egui::RichText::new("🌅 Charger la Démo Ultra HDR").strong().size(13.0).color(Color32::from_rgb(220, 240, 255)),
-                            )
-                            .fill(Color32::from_rgb(38, 55, 80))
-                            .rounding(Rounding::same(24.0));
+                                    ui.add_space(8.0);
+                                    let btn_demo = egui::Button::new(
+                                        egui::RichText::new("🌅 Charger la Démo Ultra HDR").strong().size(13.0).color(Color32::from_rgb(220, 240, 255)),
+                                    )
+                                    .fill(Color32::from_rgb(38, 55, 80))
+                                    .rounding(Rounding::same(24.0));
 
-                            if ui.add_sized([220.0, 38.0], btn_demo).clicked() {
-                                self.load_demo_image(ctx);
-                            }
-                        });
+                                    if ui.add_sized([220.0, 38.0], btn_demo).clicked() {
+                                        self.load_demo_image(ctx);
+                                    }
+                                });
+                            });
                     });
-            });
+                });
             return;
         }
 
@@ -2640,17 +2718,18 @@ impl UltraHdrApp {
         let img_h = preview.height as f32;
         let aspect = (img_w / img_h).max(1e-4);
 
-        // Calcul STRICT de la taille pour préserver le ratio exact à TOUS les niveaux de zoom
-        let (base_w, base_h) = if rect.width() / rect.height() > aspect {
-            (rect.height() * aspect, rect.height())
+        // Calcul STRICT de la taille pour préserver le ratio exact à TOUS les niveaux de zoom avec marge de 2px sur les bords
+        let view_rect = rect.shrink2(Vec2::new(2.0, 2.0));
+        let (base_w, base_h) = if view_rect.width() / view_rect.height() > aspect {
+            (view_rect.height() * aspect, view_rect.height())
         } else {
-            (rect.width(), rect.width() / aspect)
+            (view_rect.width(), view_rect.width() / aspect)
         };
 
         let draw_w = base_w * self.zoom;
         let draw_h = base_h * self.zoom;
 
-        let center = rect.center() + self.pan;
+        let center = view_rect.center() + self.pan;
         let img_rect = Rect::from_center_size(center, Vec2::new(draw_w, draw_h));
 
         let is_comparing = self.compare_toggled
@@ -2674,7 +2753,9 @@ impl UltraHdrApp {
             match self.mode {
                 ViewerMode::Split => {
                     if let (Some(tex_sdr), Some(tex_hdr)) = (&self.tex_original_sdr, &self.tex_hdr_preview) {
-                        let split_x = img_rect.left() + img_rect.width() * self.split_pos;
+                        self.split_pos = self.split_pos.clamp(0.04, 0.96);
+                        let split_x = (img_rect.left() + img_rect.width() * self.split_pos)
+                            .clamp(img_rect.left() + 2.0, img_rect.right() - 2.0);
 
                         // Moitié gauche : SDR Original (AVANT)
                         let left_clip = Rect::from_min_max(img_rect.min, Pos2::new(split_x, img_rect.max.y));
@@ -2689,8 +2770,9 @@ impl UltraHdrApp {
                         // Ligne de séparation blanche
                         painter.line_segment([Pos2::new(split_x, img_rect.top()), Pos2::new(split_x, img_rect.bottom())], Stroke::new(2.0f32, Color32::WHITE));
 
-                        // Poignée circulaire élégante avec flèches
-                        let handle_pos = Pos2::new(split_x, img_rect.center().y);
+                        // Poignée circulaire élégante avec flèches (au moins 2px d'espace avec les bords)
+                        let handle_x = split_x.clamp(img_rect.left() + 16.0, img_rect.right() - 16.0);
+                        let handle_pos = Pos2::new(handle_x, img_rect.center().y);
                         painter.circle_filled(handle_pos, 14.0, Color32::from_rgb(0, 120, 212));
                         painter.circle_stroke(handle_pos, 14.0, Stroke::new(2.5f32, Color32::WHITE));
                         painter.text(handle_pos, egui::Align2::CENTER_CENTER, "◀▶", egui::FontId::proportional(10.0), Color32::WHITE);
@@ -2705,7 +2787,7 @@ impl UltraHdrApp {
                         // Drag de la barre (désactivé si l'outil ciblé TAT est actif)
                         if !self.targeted_tool_active && response.dragged_by(egui::PointerButton::Primary) {
                             if let Some(pos) = response.interact_pointer_pos() {
-                                let pct = ((pos.x - img_rect.left()) / img_rect.width()).clamp(0.0, 1.0);
+                                let pct = ((pos.x - img_rect.left()) / img_rect.width()).clamp(0.04, 0.96);
                                 self.split_pos = pct;
                             }
                         }
@@ -2732,9 +2814,9 @@ impl UltraHdrApp {
                 ViewerMode::SideBySide => {
                     if let (Some(tex_sdr), Some(tex_hdr)) = (&self.tex_original_sdr, &self.tex_hdr_preview) {
                         let gap = 12.0;
-                        let half_avail_w = ((rect.width() - gap) * 0.5).max(10.0);
-                        let (base_single_w, base_single_h) = if half_avail_w / rect.height() > aspect {
-                            (rect.height() * aspect, rect.height())
+                        let half_avail_w = ((view_rect.width() - gap) * 0.5).max(10.0);
+                        let (base_single_w, base_single_h) = if half_avail_w / view_rect.height() > aspect {
+                            (view_rect.height() * aspect, view_rect.height())
                         } else {
                             (half_avail_w, half_avail_w / aspect)
                         };
@@ -2764,9 +2846,9 @@ impl UltraHdrApp {
             let hover_pos = ctx.input(|i| i.pointer.hover_pos());
             let (in_img, norm_x, norm_y) = if self.mode == ViewerMode::SideBySide {
                 let gap = 12.0;
-                let half_avail_w = ((rect.width() - gap) * 0.5).max(10.0);
-                let (base_single_w, base_single_h) = if half_avail_w / rect.height() > aspect {
-                    (rect.height() * aspect, rect.height())
+                let half_avail_w = ((view_rect.width() - gap) * 0.5).max(10.0);
+                let (base_single_w, base_single_h) = if half_avail_w / view_rect.height() > aspect {
+                    (view_rect.height() * aspect, view_rect.height())
                 } else {
                     (half_avail_w, half_avail_w / aspect)
                 };

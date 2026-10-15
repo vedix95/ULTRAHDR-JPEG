@@ -905,7 +905,9 @@ pub fn m3_icon_segmented_button<T: PartialEq + Copy>(
         return false;
     }
 
-    let item_w = metrics.segmented_item_w;
+    let avail = ui.available_width();
+    let max_w = metrics.segmented_item_w;
+    let item_w = ((avail - 4.0) / n as f32).min(max_w).max(34.0_f32);
     let item_h = metrics.segmented_item_h;
 
     ui.horizontal(|ui| {
